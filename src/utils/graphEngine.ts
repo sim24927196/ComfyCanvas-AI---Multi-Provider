@@ -71,7 +71,16 @@ export function extractWorkflowParameters(
   const promptRefinerNode = nodes.find((n) => n.type === 'PromptRefinerLLM' && !n.bypassed);
   const llmReasoningNode = nodes.find((n) => n.type === 'LLMReasoningNode' && !n.bypassed);
 
-  let checkpointModel = 'fal-ai/flux/schnell';
+  // 1. Checkpoint Loader inspection & dynamic model detection
+  const ckptNodes = nodes.filter((n) => n.type === 'CheckpointLoaderSimple' && !n.bypassed);
+  let checkpointModel = ckptNodes[0]?.values?.ckpt_name ||
+    googleImagenNode?.values?.model ||
+    modelScopeAiNode?.values?.model_endpoint ||
+    modelScopeNode?.values?.model_endpoint ||
+    nanoGptNode?.values?.model ||
+    falEngineNode?.values?.model ||
+    videoNode?.values?.model ||
+    '';
   let positivePrompt = '';
   let negativePrompt = '';
   let width = 1024;
@@ -139,12 +148,6 @@ export function extractWorkflowParameters(
   // 3. 画布上存在活跃的 LoadImage 节点兜底
   if (!initImageUrl && loadImageNode?.values.image_url) {
     initImageUrl = loadImageNode.values.image_url;
-  }
-
-  // 1. Checkpoint Loader inspection
-  const ckptNodes = nodes.filter((n) => n.type === 'CheckpointLoaderSimple' && !n.bypassed);
-  if (ckptNodes.length > 0) {
-    checkpointModel = ckptNodes[0].values.ckpt_name || checkpointModel;
   }
 
   // 2. Determine target provider with strict faithfulness (NO silent fallback to Fal!)

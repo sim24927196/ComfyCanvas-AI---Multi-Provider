@@ -14,7 +14,7 @@ export const DEFAULT_TEST_KEYS: ApiKeysState = {
   modelscopeAiToken: '',
   nanogptKey: '',
   geminiKey: '',
-  tensorartKey: 'ak_tensor_W6ZHTW13GiAn5lgK9Jc7XXA028Vnx580ubJ4Kbv1o64',
+  tensorartKey: '',
 };
 
 export const getStoredApiKeys = (): ApiKeysState => {

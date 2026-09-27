@@ -102,16 +102,16 @@ let generationHistory: GeneratedItem[] = readJsonFile<GeneratedItem[]>(HISTORY_F
 let cloudSettings: Record<string, any> = readJsonFile<Record<string, any>>(SETTINGS_FILE, {});
 
 const defaultKeys: Record<string, string> = {
-  tensorartKey: 'ak_tensor_W6ZHTW13GiAn5lgK9Jc7XXA028Vnx580ubJ4Kbv1o64',
-  agnesKey: '',
-  sensenovaKey: '',
-  falKey: '',
-  civitaiKey: '',
-  nanogptKey: '',
-  hfToken: '',
-  modelscopeToken: '',
-  modelscopeAiToken: '',
-  geminiKey: '',
+  tensorartKey: process.env.TENSORART_API_KEY || '',
+  agnesKey: process.env.AGNES_KEY || '',
+  sensenovaKey: process.env.SENSENOVA_KEY || '',
+  falKey: process.env.FAL_KEY || '',
+  civitaiKey: process.env.CIVITAI_API_KEY || '',
+  nanogptKey: process.env.NANOGPT_KEY || '',
+  hfToken: process.env.HF_TOKEN || '',
+  modelscopeToken: process.env.MODELSCOPE_TOKEN || '',
+  modelscopeAiToken: process.env.MODELSCOPE_AI_TOKEN || '',
+  geminiKey: process.env.GEMINI_API_KEY || '',
 };
 
 // Multi-Key Pool & High-Availability Round-Robin Load Balancer
