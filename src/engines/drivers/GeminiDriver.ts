@@ -12,7 +12,7 @@ export class GeminiDriver extends BaseEngineDriver {
   readonly name = 'Google Imagen 3 (官方直连)';
   readonly label = 'Google 官方 Imagen 3 / Gemini';
   readonly badgeColor = '#10b981';
-  readonly description = 'Google 官方 Imagen 3.0 旗舰高保真扩散模型与 Gemini 2.5 Flash 深度思考推理模型。系统级免配置直接可用。';
+  readonly description = 'Google 官方 Imagen 3.0 旗舰高保真模型、Gemini 3.1 Flash Image 及 Gemini 3.8 Flash 深度多模态思考推理模型。系统级免配置直接可用。';
   readonly capabilities = ['text2img', 'reasoning'] as const;
 
   readonly supportedModels: ModelSpec[] = [
@@ -20,16 +20,40 @@ export class GeminiDriver extends BaseEngineDriver {
       id: 'imagen-3.0-generate-002',
       name: 'Google Imagen 3.0 (高保真生图)',
       type: 'image',
-      description: 'Google 官方旗舰，顶级光影折射与艺术审美',
+      description: 'Google 官方旗舰，顶级光影折射与写实审美',
       defaultSteps: 25,
       defaultCfg: 5.0,
       supportsLora: false,
     },
     {
-      id: 'gemini-2.5-flash',
-      name: 'Gemini 2.5 Flash (多模态推理)',
+      id: 'gemini-3.1-flash-image',
+      name: 'Gemini 3.1 Flash Image (高清图像生成)',
+      type: 'image',
+      description: 'Google 新一代 Nano Banana 2 高清多画幅图像生成大模型',
+      defaultSteps: 20,
+      defaultCfg: 4.5,
+      supportsLora: false,
+    },
+    {
+      id: 'gemini-3.1-flash-lite-image',
+      name: 'Gemini 3.1 Flash Lite Image (极速生图)',
+      type: 'image',
+      description: '极低延迟快速生图与概念渲染',
+      defaultSteps: 15,
+      defaultCfg: 4.0,
+      supportsLora: false,
+    },
+    {
+      id: 'gemini-3.8-flash',
+      name: 'Gemini 3.8 Flash (旗舰多模态思考)',
       type: 'reasoning',
-      description: '多模态视觉推理与超快文本生成',
+      description: 'Google 旗舰级多模态视觉推理与超快文本生成',
+    },
+    {
+      id: 'gemini-3.1-pro-preview',
+      name: 'Gemini 3.1 Pro (复杂逻辑推理)',
+      type: 'reasoning',
+      description: '前沿复杂科学与提示词长链深度推理',
     },
   ];
 
@@ -48,6 +72,7 @@ export class GeminiDriver extends BaseEngineDriver {
       body: JSON.stringify({
         prompt: params.prompt,
         negative_prompt: params.negative_prompt,
+        model: params.model || 'imagen-3.0-generate-002',
         width: params.width || 1024,
         height: params.height || 1024,
         cfg: params.cfg,

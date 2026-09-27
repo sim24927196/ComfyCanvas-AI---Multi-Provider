@@ -35,12 +35,19 @@ export const SOCKET_COLORS: Record<DataType, string> = {
   ANY: '#cbd5e1',          // Light Slate
 };
 
+export interface WidgetOption {
+  label: string;
+  value: any;
+  provider?: string;
+  description?: string;
+}
+
 export interface WidgetDef {
   name: string;
   label: string;
   type: 'text' | 'textarea' | 'number' | 'slider' | 'select' | 'toggle' | 'seed';
   default: any;
-  options?: Array<{ label: string; value: any }>;
+  options?: WidgetOption[];
   min?: number;
   max?: number;
   step?: number;

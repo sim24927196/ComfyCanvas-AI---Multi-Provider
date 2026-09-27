@@ -62,7 +62,7 @@ export const WorkflowPresetsModal: React.FC<WorkflowPresetsModalProps> = ({
 
   // Civitai URL Extract State
   const [civitaiUrlInput, setCivitaiUrlInput] = useState<string>('https://civitai.red/images/136947637');
-  const [selectedEngine, setSelectedEngine] = useState<'civitai' | 'fal' | 'video' | 'agnes' | 'sensenova' | 'modelscope' | 'huggingface' | 'tensorart'>('civitai');
+  const [selectedEngine, setSelectedEngine] = useState<'civitai' | 'fal' | 'video' | 'agnes' | 'sensenova' | 'modelscope' | 'huggingface' | 'tensorart' | 'nanogpt'>('civitai');
   const [showOtherMetadata, setShowOtherMetadata] = useState<boolean>(true);
   const [isExtractingCivitai, setIsExtractingCivitai] = useState<boolean>(false);
   const [civitaiExtractError, setCivitaiExtractError] = useState<string | null>(null);
@@ -93,6 +93,7 @@ export const WorkflowPresetsModal: React.FC<WorkflowPresetsModalProps> = ({
   // Filter presets
   const categories = [
     '全部',
+    'Tensor.Art 官方原生',
     'Civitai 热门精选 (hinablue)',
     'FLUX 热门微调',
     '二次元 / 动漫美学',
@@ -105,7 +106,7 @@ export const WorkflowPresetsModal: React.FC<WorkflowPresetsModalProps> = ({
 
   const handleExtractCivitaiWorkflow = async (
     targetUrl = civitaiUrlInput,
-    engineToUse: 'civitai' | 'fal' | 'video' | 'agnes' | 'sensenova' | 'modelscope' | 'huggingface' | 'tensorart' = selectedEngine
+    engineToUse: 'civitai' | 'fal' | 'video' | 'agnes' | 'sensenova' | 'modelscope' | 'huggingface' | 'tensorart' | 'nanogpt' = selectedEngine
   ) => {
     if (!targetUrl.trim()) return;
     setIsExtractingCivitai(true);
@@ -240,7 +241,21 @@ export const WorkflowPresetsModal: React.FC<WorkflowPresetsModalProps> = ({
           civitaiId: l.values.civitai_id || '',
         }));
 
-        const targetProvider = rawCkpt.includes('damo') || rawCkpt.includes('wan2.1') ? 'modelscope' : 'fal';
+        const rawCkptLower = rawCkpt.toLowerCase();
+        const targetProvider =
+          rawCkptLower.includes('tensor') || rawCkptLower.includes('banana') || rawCkptLower.includes('oc_character') || rawCkptLower.includes('openworks')
+            ? 'tensorart'
+            : rawCkptLower.includes('nanogpt')
+            ? 'nanogpt'
+            : rawCkptLower.includes('damo') || rawCkptLower.includes('modelscope')
+            ? 'modelscope'
+            : rawCkptLower.includes('sensenova')
+            ? 'sensenova'
+            : rawCkptLower.includes('agnes')
+            ? 'agnes'
+            : rawCkptLower.includes('civitai') || rawCkptLower.startsWith('urn:air:')
+            ? 'civitai'
+            : 'fal';
 
         return {
           id: `frame-imported-${Date.now()}`,
@@ -953,6 +968,7 @@ Steps: 28, Sampler: DPM++ 2M Karras, CFG scale: 4.5, Seed: 136947637, Size: 1024
                       {selectedEngine === 'civitai' && '🌟 Civitai 官方原生生成引擎 (最优适配)'}
                       {selectedEngine === 'fal' && '⚡ Fal.ai 极速云引擎 (官方端点)'}
                       {selectedEngine === 'tensorart' && '🎨 Tensor.Art 官方原生引擎 (OpenWorks)'}
+                      {selectedEngine === 'nanogpt' && '🟢 NanoGPT 极速生图引擎 (按需即付)'}
                       {selectedEngine === 'video' && '🎬 AI Video 视频引擎 (MiniMax / Wan 2.1)'}
                       {selectedEngine === 'agnes' && '🚀 Agnes AI 2.5 Flash 极速生图'}
                       {selectedEngine === 'sensenova' && '🧠 SenseNova 日日新 CoT 引擎'}
@@ -961,7 +977,7 @@ Steps: 28, Sampler: DPM++ 2M Karras, CFG scale: 4.5, Seed: 136947637, Size: 1024
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                     {[
                       {
                         id: 'civitai',
@@ -986,6 +1002,14 @@ Steps: 28, Sampler: DPM++ 2M Karras, CFG scale: 4.5, Seed: 136947637, Size: 1024
                         badgeColor: 'bg-purple-600/20 text-purple-300 border-purple-500/30',
                         desc: '直连 Tensor.Art / 吐司 AI 模型中心，FLUX.1、SDXL、Pony、Illustrious 原生云端解算',
                         activeBorder: 'border-purple-500 bg-purple-950/30 text-white',
+                      },
+                      {
+                        id: 'nanogpt',
+                        name: 'NanoGPT 极速',
+                        badge: '239+ 现货',
+                        badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+                        desc: '直连 NanoGPT 按需推理引擎，FLUX.1、Qwen Image 2.1、SDXL 极速按次即付',
+                        activeBorder: 'border-emerald-500 bg-emerald-950/30 text-white',
                       },
                       {
                         id: 'video',

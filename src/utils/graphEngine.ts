@@ -193,7 +193,15 @@ export function extractWorkflowParameters(
     }
   } else {
     // Faithful provider deduction from architecture and endpoint format
-    if (checkpointModel.includes('tensor') || /^\d{10,25}$/.test(checkpointModel)) {
+    const isTaTool = [
+      'strong_text2image', 'photoreal_studio', 'anime_lab', 'oc_character',
+      'text2video_wan', 'text2video_ltx', 'image2video_wan', 'image2video_ltx',
+      'smart_edit', 'image_upscaler', 'background_remover', 'extend_image_sd15',
+      'live_wallpaper', 'old_photo_restore', 'three_view_flux_kontext', 'watermark_remove',
+      'oc_garment'
+    ].some((prefix) => checkpointModel.includes(prefix));
+
+    if (checkpointModel.includes('tensor') || /^\d{10,25}$/.test(checkpointModel) || isTaTool) {
       targetProvider = 'tensorart';
     } else if (checkpointModel.startsWith('damo/') || checkpointModel.startsWith('AI-ModelScope/') || checkpointModel.includes('modelscope')) {
       targetProvider = 'modelscope';

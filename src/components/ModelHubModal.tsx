@@ -55,7 +55,7 @@ interface ModelHubModalProps {
 }
 
 export type CategoryFilter = 'all' | 'checkpoint' | 'lora' | 'video' | 'edit';
-export type ProviderTab = 'all' | 'civitai' | 'fal' | 'tensorart' | 'modelscope' | 'modelscope_ai' | 'agnes' | 'sensenova' | 'huggingface' | 'nanogpt' | 'gemini';
+export type ProviderTab = 'all' | 'civitai' | 'fal' | 'tensorart' | 'modelscope' | 'modelscope_ai' | 'huggingface' | 'nanogpt' | 'gemini';
 export type ModelSortOption = 'downloads' | 'rating' | 'likes' | 'name_asc' | 'name_desc' | 'bookmarked';
 
 export const ModelHubModal: React.FC<ModelHubModalProps> = ({
@@ -130,14 +130,28 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
     }
   };
 
+  const handleCategoryChange = (newCat: CategoryFilter) => {
+    setActiveCategory(newCat);
+    loadModels(activeProvider, newCat, query, sortOption);
+  };
+
+  const handleProviderChange = (newProv: ProviderTab) => {
+    setActiveProvider(newProv);
+    loadModels(newProv, activeCategory, query, sortOption);
+  };
+
+  const handleSortChange = (newSort: ModelSortOption) => {
+    setSortOption(newSort);
+    loadModels(activeProvider, activeCategory, query, newSort);
+  };
+
   useEffect(() => {
     if (isOpen) {
-      if (initialCategory && initialCategory !== activeCategory) {
-        setActiveCategory(initialCategory);
-      }
-      loadModels(activeProvider, activeCategory, query, sortOption);
+      const targetCat = initialCategory || 'all';
+      setActiveCategory(targetCat);
+      loadModels(activeProvider, targetCat, query, sortOption);
     }
-  }, [isOpen, activeProvider, activeCategory, sortOption]);
+  }, [isOpen, initialCategory]);
 
   if (!isOpen) return null;
 
@@ -273,9 +287,9 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
             </span>
             {[
               { id: 'all', label: '全部模型', icon: Sparkles },
-              { id: 'checkpoint', label: '🏛️ 基础底模 Hub (Checkpoints)', icon: Cpu },
-              { id: 'lora', label: '🎨 微调 LoRA 枢纽 (Styles & LoRA)', icon: Layers },
-              { id: 'video', label: '🎥 AI 视频大模型 (Wan 2.1 / LTX / Kling)', icon: Video },
+              { id: 'checkpoint', label: '🏛️ 基础底模 (Checkpoints)', icon: Cpu },
+              { id: 'video', label: '🎥 AI 视频大模型 (Wan / LTX / Kling)', icon: Video },
+              { id: 'lora', label: '🎨 微调 LoRA 枢纽 (LoRA Weights)', icon: Layers },
               { id: 'edit', label: '🪄 图像编辑与控制 (Edit & Control)', icon: Wand2 },
             ].map((cat) => {
               const isSelected = activeCategory === cat.id;
@@ -283,7 +297,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
               return (
                 <button
                   key={cat.id}
-                  onClick={() => setActiveCategory(cat.id as any)}
+                  onClick={() => handleCategoryChange(cat.id as any)}
                   className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 shrink-0 ${
                     isSelected
                       ? 'bg-gradient-to-r from-cyan-600/30 to-indigo-600/30 text-cyan-200 border border-cyan-500/50 shadow-sm'
@@ -308,22 +322,20 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
         <div className="px-6 pt-3 pb-1 bg-[#111216] border-b border-[#22242f] flex items-center gap-2 overflow-x-auto shrink-0 min-h-[44px]">
           {[
             { id: 'all', name: '全部服务商 (All Providers)' },
-            { id: 'civitai', name: 'Civitai (C站微调/视频/底模)' },
-            { id: 'fal', name: 'Fal.ai (FLUX/Wan2.1/LTX 极速云)' },
-            { id: 'tensorart', name: 'Tensor.Art (吐司模型枢纽)' },
+            { id: 'civitai', name: '🌟 Civitai (C站微调/视频/底模)' },
+            { id: 'huggingface', name: '🤗 Hugging Face (开源生态)' },
             { id: 'modelscope', name: '🇨🇳 魔搭 CN (国内站)' },
             { id: 'modelscope_ai', name: '🌐 魔搭 AI (国际站)' },
-            { id: 'agnes', name: 'Agnes AI (ApiHub 官方聚合)' },
-            { id: 'sensenova', name: 'SenseNova (商汤日日新)' },
-            { id: 'huggingface', name: 'Hugging Face (开源生态)' },
-            { id: 'nanogpt', name: 'NanoGPT (按次付费 API)' },
-            { id: 'gemini', name: 'Google Gemini (内置 Imagen 3)' },
+            { id: 'fal', name: '⚡ Fal.ai (FLUX/Wan2.1/LTX 极速云)' },
+            { id: 'nanogpt', name: '🟢 NanoGPT (即开即用官方端点)' },
+            { id: 'tensorart', name: '🎨 Tensor.Art (OpenWorks 算力工具)' },
+            { id: 'gemini', name: '💎 Google Imagen 3 (官方生图)' },
           ].map((tab) => {
             const isActive = activeProvider === tab.id;
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveProvider(tab.id as any)}
+                onClick={() => handleProviderChange(tab.id as any)}
                 className={`pb-2.5 px-3 font-semibold transition-all relative whitespace-nowrap text-xs shrink-0 ${
                   isActive ? 'text-cyan-400 font-bold' : 'text-slate-400 hover:text-slate-200'
                 }`}
@@ -391,7 +403,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
             <span>
               <strong>自定义模型 / 端点泛化导入：</strong>
               {activeProvider === 'tensorart'
-                ? '输入任意 Tensor.Art 真实模型 ID 或模板 ID (如 840417077373405793 或 601420727112962175)'
+                ? '输入 Tensor.Art OpenWorks Tool 名称 (如 oc_character_illustration, strong_text2image_wan27)'
                 : activeProvider === 'huggingface'
                 ? '输入任意 Hugging Face 模型 ID (如 stabilityai/stable-diffusion-xl-base-1.0)'
                 : activeProvider === 'modelscope' || activeProvider === 'modelscope_ai'
@@ -399,7 +411,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
                 : activeProvider === 'fal'
                 ? '输入任意 Fal.ai 官方端点 (如 fal-ai/flux/dev 或 fal-ai/lora)'
                 : activeProvider === 'nanogpt'
-                ? '输入任意 NanoGPT Model ID (如 flux-dev)'
+                ? '输入任意 NanoGPT Model ID (如 qwen-image-2.1/text-to-image, flux-pro, birefnet/v2)'
                 : activeProvider === 'gemini'
                 ? '输入 Gemini / Imagen 模型 ID (如 imagen-3.0-generate-002)'
                 : '输入任意 Civitai 模型 ID / AIR URN (如 133005 或 urn:air:...)'}
@@ -410,7 +422,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
               type="text"
               placeholder={
                 activeProvider === 'tensorart'
-                  ? '输入 Tensor.Art 真实模型 ID (如 840417077373405793)...'
+                  ? '输入 Tool 名称 (如 oc_character_illustration)...'
                   : activeProvider === 'huggingface'
                   ? '输入 HF Repo ID (如 user/model-name)...'
                   : activeProvider === 'modelscope' || activeProvider === 'modelscope_ai'
@@ -418,7 +430,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
                   : activeProvider === 'fal'
                   ? '输入 Fal.ai Endpoint (如 fal-ai/...)...'
                   : activeProvider === 'nanogpt'
-                  ? '输入 NanoGPT Model ID...'
+                  ? '输入 NanoGPT Model ID (如 qwen-image-2.1/text-to-image)...'
                   : '输入 Civitai ID (如 133005) 或 URN...'
               }
               id="custom-tensor-template-input-modelhub"
@@ -465,8 +477,8 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
                 <>🏛️ <strong>底模中心 (Base Model Hub):</strong> 点击「应用为活跃底模」可将当前画板前置 Checkpoint 切换为此模型；点击「添加到画布」可创建 Load Checkpoint 节点。</>
               )}
               {activeCategory === 'lora' && (
-                activeProvider === 'tensorart' ? (
-                  <>🎨 <strong>Tensor.Art LoRA 枢纽:</strong> OpenWorks API 当前提供了 23 款官方云端工作流工具。如需使用吐司社区特定数字 Model ID 的微调 LoRA，可直接在上方「自定义模型 / 端点泛化导入」栏中输入 Model ID 动态加载。</>
+                activeProvider === 'nanogpt' ? (
+                  <>ℹ️ <strong>引擎特性提示:</strong> NanoGPT 为即开即用聚合模型推理端点，非独立的 LoRA 权重社区仓库。如需挂载社区 LoRA，请切换至 Civitai、Hugging Face、魔搭 (ModelScope) 或 Tensor.Art (吐司) 标签页。</>
                 ) : (
                   <>🎨 <strong>LoRA 枢纽 (LoRA Hub):</strong> 点击「🎯 选用 LoRA 并自动配对底模」可智能校准底模架构；点击「挂载到当前取景框」可加入叠加矩阵。</>
                 )
@@ -663,7 +675,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
                           </span>
                         </div>
 
-                        {m.rating && (
+                        {typeof m.rating === 'number' && m.rating > 0 && (
                           <div className="absolute bottom-2 right-2 bg-black/75 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] text-amber-300 font-semibold flex items-center gap-1">
                             <Star className="w-3 h-3 fill-amber-400" />
                             <span>{Number(m.rating).toFixed(1)}</span>
@@ -678,7 +690,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
                             <h4 className="font-bold text-white text-xs truncate" title={displayName}>
                               {displayName}
                             </h4>
-                            {m.externalUrl ? (
+                            {m.externalUrl && m.externalUrl !== 'https://nano-gpt.com' && m.externalUrl !== 'https://tensor.art' && m.externalUrl !== 'https://nano-gpt.com/' && m.externalUrl !== 'https://tensor.art/' ? (
                               <a
                                 href={m.externalUrl}
                                 target="_blank"
@@ -695,6 +707,16 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
                                 rel="noreferrer"
                                 className="text-slate-400 hover:text-purple-400 shrink-0 p-1 hover:bg-white/5 rounded-md transition-colors"
                                 title="前往 Tensor.Art 查看模型"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            ) : providerKey.includes('nanogpt') ? (
+                              <a
+                                href={`https://nano-gpt.com/models?search=${encodeURIComponent(modelId)}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-slate-400 hover:text-emerald-400 shrink-0 p-1 hover:bg-white/5 rounded-md transition-colors"
+                                title="前往 NanoGPT 查看模型"
                               >
                                 <ExternalLink className="w-3.5 h-3.5" />
                               </a>
@@ -753,7 +775,7 @@ export const ModelHubModal: React.FC<ModelHubModalProps> = ({
 
                           {/* Stats Tags */}
                           <div className="flex flex-wrap gap-1.5 mt-2">
-                            {m.downloads !== undefined && (
+                            {typeof m.downloads === 'number' && m.downloads > 0 && (
                               <span className="flex items-center gap-1 text-[10px] text-slate-400 font-mono bg-[#13141a] px-1.5 py-0.5 rounded">
                                 <Download className="w-3 h-3" />
                                 {m.downloads.toLocaleString()} 下载

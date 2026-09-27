@@ -40,7 +40,7 @@ interface NodeItemProps {
   onImageClick?: (url: string) => void;
   currentCheckpoint?: string;
   onAutoFixCheckpoint?: (recommendedCheckpoint: string) => void;
-  onOpenModelHub?: () => void;
+  onOpenModelHub?: (category?: 'all' | 'checkpoint' | 'lora' | 'video' | 'edit') => void;
 }
 
 export const NodeItem: React.FC<NodeItemProps> = ({
@@ -385,13 +385,13 @@ export const NodeItem: React.FC<NodeItemProps> = ({
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              onOpenModelHub();
+                              onOpenModelHub('checkpoint');
                             }}
                             className="text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 bg-cyan-950/40 hover:bg-cyan-900/60 px-2 py-0.5 rounded border border-cyan-800/40 transition-colors"
-                            title="打开全生态模型中心 (Hub) 搜索数万开源底模与 LoRA"
+                            title="打开基础底模中心 (Hub) 挑选并切换 Checkpoint 底模"
                           >
                             <Search className="w-2.5 h-2.5" />
-                            <span>模型中心</span>
+                            <span>底模中心</span>
                           </button>
                         )}
                       </div>
@@ -454,30 +454,90 @@ export const NodeItem: React.FC<NodeItemProps> = ({
                 );
               }
 
-              return (
-                <div key={widget.name} className="space-y-1">
-                  <label className="text-slate-400 font-mono text-[11px] block">{widget.label}</label>
-                  <select
-                    value={value}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    onChange={(e) => onUpdateValue(node.id, widget.name, e.target.value)}
-                    className="w-full bg-[#121316] border border-[#2d303a] hover:border-cyan-500/50 focus:border-cyan-500 rounded-lg px-2.5 py-1.5 text-slate-200 text-xs font-mono outline-none cursor-pointer select-text"
-                  >
-                    {!isValueInOpts && value && (
-                      <option key={`custom-native-${value}`} value={value}>
-                        ★ [解析原生底模] {value}
-                      </option>
-                    )}
-                    {opts.map((opt, idx) => (
-                        <option key={`opt-${opt.value}-${idx}`} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              );
+              if (node.type === 'AIVideoNode' && widget.name === 'model') {
+                const currentProv = node.values?.targetProvider || 'fal';
+                const providerOpts = opts.filter((o: any) => o.provider === currentProv);
+                const otherOpts = opts.filter((o: any) => o.provider && o.provider !== currentProv);
+                const isCustom = !opts.some((o) => o.value === value) && Boolean(value);
+
+                return (
+                  <div key={widget.name} className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-slate-400 font-mono text-[11px] block">{widget.label}</label>
+                      <div className="flex items-center gap-1.5">
+                        {onOpenModelHub && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenModelHub('video');
+                            }}
+                            className="text-[10px] text-lime-400 hover:text-lime-300 flex items-center gap-1 bg-lime-950/40 hover:bg-lime-900/60 px-2 py-0.5 rounded border border-lime-800/40 transition-colors"
+                            title="打开 AI 视频大模型中心挑选 Wan 2.7 / 2.1、LTX、Kling 官方端点"
+                          >
+                            <Search className="w-2.5 h-2.5" />
+                            <span>视频模型中心</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {/* Primary Dropdown Select */}
+                    <select
+                      value={value}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => e.stopPropagation()}
+                      onChange={(e) => onUpdateValue(node.id, widget.name, e.target.value)}
+                      className="w-full bg-[#121316] border border-[#2d303a] hover:border-lime-500/50 focus:border-lime-500 rounded-lg px-2.5 py-1.5 text-slate-200 text-xs font-mono outline-none cursor-pointer select-text"
+                    >
+                      {isCustom && (
+                        <option key={`custom-video-${value}`} value={value}>
+                          ★ [自定义视频端点] {value}
+                        </option>
+                      )}
+                      {providerOpts.length > 0 && (
+                        <optgroup label={`🎬 ${currentProv.toUpperCase()} 官方推荐视频大模型`}>
+                          {providerOpts.map((opt, idx) => (
+                            <option key={`prov-vid-${(opt as any).provider}-${opt.value}-${idx}`} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {otherOpts.length > 0 && (
+                        <optgroup label="🌐 其它视频服务商端点">
+                          {otherOpts.map((opt, idx) => (
+                            <option key={`other-vid-${(opt as any).provider}-${opt.value}-${idx}`} value={opt.value}>
+                              [{(opt as any).provider?.toUpperCase()}] {opt.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {providerOpts.length === 0 && otherOpts.length === 0 && opts.map((opt, idx) => (
+                        <option key={`fallback-vid-${opt.value}-${idx}`} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* Secondary Custom Path Input */}
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <span className="text-[10px] text-slate-500 font-mono shrink-0">自定义:</span>
+                      <input
+                        type="text"
+                        value={value || ""}
+                        placeholder="或输入任意视频端点 (如 fal-ai/wan/v2.1/text-to-video)"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        onChange={(e) => onUpdateValue(node.id, widget.name, e.target.value)}
+                        className="w-full bg-[#0d0e12] border border-[#22242c] focus:border-lime-500 rounded px-2 py-0.5 text-[10px] text-lime-300 font-mono placeholder:text-slate-600 outline-none select-text cursor-text"
+                        title="支持直接输入任意 Fal.ai / Tensor.Art / ModelScope 视频端点"
+                      />
+                    </div>
+                  </div>
+                );
+              }
             }
 
             if (widget.type === 'textarea') {
@@ -580,13 +640,13 @@ export const NodeItem: React.FC<NodeItemProps> = ({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onOpenModelHub();
+                          onOpenModelHub('checkpoint');
                         }}
                         className="text-[10px] text-cyan-300 hover:text-white flex items-center gap-1 bg-cyan-950/40 hover:bg-cyan-900/60 px-1.5 py-0.5 rounded border border-cyan-800/40 transition-colors"
-                        title="打开全生态模型中心实时拉取并选用底模"
+                        title="打开基础底模中心挑选并选用 Checkpoint 底模"
                       >
                         <Search className="w-3 h-3 text-cyan-400" />
-                        <span>模型中心</span>
+                        <span>底模中心</span>
                       </button>
                     )}
                   </div>

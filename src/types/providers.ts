@@ -16,6 +16,36 @@ export interface ProviderConfig {
   popularModels: string[];
 }
 
+export interface KeyPoolItemStats {
+  key: string;
+  maskedKey: string;
+  status: 'active' | 'rate_limited' | 'invalid' | 'testing';
+  totalCalls: number;
+  successfulCalls: number;
+  failedCalls: number;
+  consecutiveFailures?: number;
+  avgLatencyMs: number;
+  lastUsed: number;
+  lastError?: string;
+  rateLimitResetAt?: number;
+}
+
+export interface ProviderPoolStats {
+  totalKeys: number;
+  activeKeys: number;
+  rateLimitedKeys: number;
+  invalidKeys: number;
+  strategy: 'round_robin' | 'failover' | 'latency_best';
+  keys: KeyPoolItemStats[];
+}
+
+export interface ProviderBalanceInfo {
+  status: 'ok' | 'low' | 'exhausted' | 'unknown' | 'error';
+  amount?: number | string;
+  unit?: string;
+  detail?: string;
+}
+
 export interface ApiKeysState {
   civitaiKey: string;
   falKey: string;
@@ -29,6 +59,7 @@ export interface ApiKeysState {
   nanogptKey: string;
   geminiKey: string;
   tensorartKey?: string;
+  [key: string]: any;
 }
 
 export interface CivitaiModelItem {
@@ -77,6 +108,8 @@ export interface GenerationHistoryItem {
   seed: number;
   steps: number;
   cfg: number;
+  sampler?: string;
+  scheduler?: string;
   width?: number;
   height?: number;
   timestamp: number;

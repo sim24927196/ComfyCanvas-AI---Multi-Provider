@@ -44,7 +44,7 @@ interface CanvasProps {
   onPreviewImage: (url: string) => void;
   currentCheckpoint?: string;
   onAutoFixCheckpoint?: (checkpoint: string) => void;
-  onOpenModelHub?: () => void;
+  onOpenModelHub?: (category?: any) => void;
 }
 
 export const Canvas: React.FC<CanvasProps> = ({

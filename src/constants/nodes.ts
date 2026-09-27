@@ -35,15 +35,27 @@ export interface BaseModelOption {
 }
 
 export const BASE_MODELS: BaseModelOption[] = [
-  // ===================== TENSOR.ART (OpenWorks) =====================
-  { label: '🎨 [Tensor] FLUX.1 [dev] 旗舰生图 (flux_1_dev)', value: 'flux_1_dev', provider: 'tensorart', category: 'checkpoint' },
-  { label: '🎨 [Tensor] FLUX.1 [schnell] 极速生图 (flux_1_schnell)', value: 'flux_1_schnell', provider: 'tensorart', category: 'checkpoint' },
-  { label: '🎨 [Tensor] SDXL 1.0 Base 官方基模 (sdxl_base_1_0)', value: 'sdxl_base_1_0', provider: 'tensorart', category: 'checkpoint' },
-  { label: '🎨 [Tensor] Pony Diffusion V6 XL (pony_diffusion_v6_xl)', value: 'pony_diffusion_v6_xl', provider: 'tensorart', category: 'checkpoint' },
-  { label: '🎨 [Tensor] Realistic Pony Diffusion (realistic_pony_diffusion)', value: 'realistic_pony_diffusion', provider: 'tensorart', category: 'checkpoint' },
-  { label: '🎨 [Tensor] Illustrious-XL (illustrious_xl)', value: 'illustrious_xl', provider: 'tensorart', category: 'checkpoint' },
-  { label: '🎨 [Tensor] DreamShaper XL (dreamshaper_xl)', value: 'dreamshaper_xl', provider: 'tensorart', category: 'checkpoint' },
-  { label: '🎨 [Tensor] Wan 2.1 Video 运镜模型 (wan_video)', value: 'wan_video', provider: 'tensorart', category: 'video' },
+  // ===================== TENSOR.ART (OpenWorks 官方原生算力) =====================
+  { label: '🎨 [Tensor] Nano Banana 2 旗舰文生图 (strong_text2image_nano_banana2)', value: 'strong_text2image_nano_banana2', provider: 'tensorart', category: 'checkpoint' },
+  { label: '🎨 [Tensor] Wan 2.7 旗舰文生图 (strong_text2image_wan27)', value: 'strong_text2image_wan27', provider: 'tensorart', category: 'checkpoint' },
+  { label: '🎨 [Tensor] Photoreal Studio 真实人像摄影 (photoreal_studio_z_image)', value: 'photoreal_studio_z_image', provider: 'tensorart', category: 'checkpoint' },
+  { label: '🎨 [Tensor] Anime Lab 二次元立绘 (anime_lab_wai_illustrious)', value: 'anime_lab_wai_illustrious', provider: 'tensorart', category: 'checkpoint' },
+  { label: '🎨 [Tensor] OC 角色插画生成 (oc_character_illustration)', value: 'oc_character_illustration', provider: 'tensorart', category: 'checkpoint' },
+  { label: '🎨 [Tensor] Wan 2.7 旗舰文生视频 (text2video_wan27)', value: 'text2video_wan27', provider: 'tensorart', category: 'video' },
+  { label: '🎨 [Tensor] Wan 2.2 文生视频 (text2video_wan22)', value: 'text2video_wan22', provider: 'tensorart', category: 'video' },
+  { label: '🎨 [Tensor] LTX 2.3 文生视频 (text2video_ltx23)', value: 'text2video_ltx23', provider: 'tensorart', category: 'video' },
+  { label: '🎨 [Tensor] Wan 2.7 旗舰图生视频 (image2video_wan27)', value: 'image2video_wan27', provider: 'tensorart', category: 'video' },
+  { label: '🎨 [Tensor] Wan 2.5 官方图生视频 (image2video_wan25)', value: 'image2video_wan25', provider: 'tensorart', category: 'video' },
+  { label: '🎨 [Tensor] Wan 2.2 官方图生视频 (image2video_wan22)', value: 'image2video_wan22', provider: 'tensorart', category: 'video' },
+  { label: '🎨 [Tensor] LTX 2.3 官方图生视频 (image2video_ltx23)', value: 'image2video_ltx23', provider: 'tensorart', category: 'video' },
+  { label: '🎨 [Tensor] Nano Banana 2 智能多图编辑 (smart_edit_nano_banana2)', value: 'smart_edit_nano_banana2', provider: 'tensorart', category: 'edit' },
+  { label: '🎨 [Tensor] Wan 2.7 智能多图编辑 (smart_edit_wan27)', value: 'smart_edit_wan27', provider: 'tensorart', category: 'edit' },
+  { label: '🎨 [Tensor] 智能超分辨率放大 (image_upscaler)', value: 'image_upscaler', provider: 'tensorart', category: 'edit' },
+  { label: '🎨 [Tensor] 智能背景抠图提取 (background_remover)', value: 'background_remover', provider: 'tensorart', category: 'edit' },
+  { label: '🎨 [Tensor] SD1.5 画布智能外扩 (extend_image_sd15)', value: 'extend_image_sd15', provider: 'tensorart', category: 'edit' },
+  { label: '🎨 [Tensor] 老照片高清修复 (old_photo_restore)', value: 'old_photo_restore', provider: 'tensorart', category: 'edit' },
+  { label: '🎨 [Tensor] Flux 三视图生成 (three_view_flux_kontext)', value: 'three_view_flux_kontext', provider: 'tensorart', category: 'edit' },
+  { label: '🎨 [Tensor] 智能消除水印 (watermark_remove)', value: 'watermark_remove', provider: 'tensorart', category: 'edit' },
 
   // ===================== MODELSCOPE (CN/AI) =====================
   { label: '🇨🇳 [魔搭] Tongyi-MAI Z-Image-Turbo (免 Token 直连)', value: 'Tongyi-MAI/Z-Image-Turbo', provider: 'modelscope', category: 'checkpoint' },
@@ -74,10 +86,10 @@ export const BASE_MODELS: BaseModelOption[] = [
   { label: '🌟 [Civitai] SDXL 1.0 Base (urn:air:sdxl:checkpoint:civitai:101055@128078)', value: 'urn:air:sdxl:checkpoint:civitai:101055@128078', provider: 'civitai', category: 'checkpoint' },
   { label: '🌟 [Civitai] FLUX.1 [dev] (urn:air:flux1:checkpoint:civitai:618692@691639)', value: 'urn:air:flux1:checkpoint:civitai:618692@691639', provider: 'civitai', category: 'checkpoint' },
 
-  // ===================== SPECIALIZED =====================
-  { label: '🧠 [商汤] SenseNova V5 (sensenova-v5)', value: 'sensenova-v5', provider: 'sensenova', category: 'checkpoint' },
-  { label: '🚀 [Agnes] Agnes 2.5 Flash (agnes-v2.5)', value: 'agnes-v2.5', provider: 'agnes', category: 'checkpoint' },
+  // ===================== GOOGLE / NANOGPT =====================
   { label: '💎 [Google] Imagen 3.0 (imagen-3.0-generate-002)', value: 'imagen-3.0-generate-002', provider: 'gemini', category: 'checkpoint' },
+  { label: '🟢 [NanoGPT] FLUX.1 Schnell (flux-schnell)', value: 'flux-schnell', provider: 'nanogpt', category: 'checkpoint' },
+  { label: '🟢 [NanoGPT] Qwen Image 2.1 (qwen-image-2.1)', value: 'qwen-image-2.1', provider: 'nanogpt', category: 'checkpoint' },
 ];
 
 export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
@@ -298,7 +310,7 @@ export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
         options: [
           { label: '商汤日日新 (SenseNova DeepSeek V4)', value: 'sensenova' },
           { label: 'Agnes AI (ApiHub Agnes 3.0 Flash)', value: 'agnes' },
-          { label: 'Google Gemini (Gemini 2.5 Flash)', value: 'gemini' },
+          { label: 'Google Gemini (Gemini 3.8 Flash)', value: 'gemini' },
         ],
       },
       {
@@ -313,7 +325,8 @@ export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
           { label: 'sensenova-6.8-flash-lite (商汤轻量多模态)', value: 'sensenova-6.8-flash-lite' },
           { label: 'agnes-3.0-flash (Agnes 深度推理)', value: 'agnes-3.0-flash' },
           { label: 'agnes-2.5-pro-alpha (Agnes 逻辑分析)', value: 'agnes-2.5-pro-alpha' },
-          { label: 'gemini-2.5-flash (Google 多模态)', value: 'gemini-2.5-flash' },
+          { label: 'gemini-3.8-flash (Google 旗舰多模态)', value: 'gemini-3.8-flash' },
+          { label: 'gemini-3.1-pro-preview (Google 复杂深度推理)', value: 'gemini-3.1-pro-preview' },
         ],
       },
       {
@@ -773,10 +786,10 @@ export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
 
   AIVideoNode: {
     type: 'AIVideoNode',
-    title: 'AI 电影级视频生成 (Wan 2.1 / LTX / Kling)',
+    title: 'AI 电影级视频生成 (Wan 2.7/2.1 / LTX / Kling)',
     category: 'providers',
     colorTag: '#a3e635',
-    description: '生成电影级 AI 动态视频，支持 Wan 2.1、LTX-Video、可灵 Kling 1.5、CogVideoX 及海螺 MiniMax。',
+    description: '生成电影级 AI 动态视频，支持 Wan 2.7/2.1、LTX-Video、可灵 Kling 1.5、CogVideoX 及海螺 MiniMax。',
     inputs: [
       { id: 'positive', name: 'positive', type: 'CONDITIONING', label: 'prompt' },
       { id: 'negative', name: 'negative', type: 'CONDITIONING', label: 'negative' },
@@ -788,16 +801,51 @@ export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
     ],
     widgets: [
       {
+        name: 'targetProvider',
+        label: '视频服务商 (Provider)',
+        type: 'select',
+        default: 'fal',
+        options: [
+          { label: '⚡ Fal.ai 极速云端引擎', value: 'fal' },
+          { label: '🎨 Tensor.Art (OpenWorks 官方算力)', value: 'tensorart' },
+          { label: '🇨🇳 魔搭社区 (modelscope.cn 阿里官方)', value: 'modelscope' },
+          { label: '🟢 NanoGPT 官方视频端点', value: 'nanogpt' },
+          { label: '🚀 Agnes AI 2.5 极速视频', value: 'agnes' },
+        ],
+      },
+      {
         name: 'model',
         label: 'model (AI视频大模型)',
-        type: 'text',
+        type: 'select',
         default: 'fal-ai/wan/v2.1/text-to-video',
-        placeholder: '输入视频大模型端点 ID',
+        options: [
+          { label: '⚡ [Fal] Wan 2.1 旗舰文生视频 (fal-ai/wan/v2.1/text-to-video)', value: 'fal-ai/wan/v2.1/text-to-video', provider: 'fal' },
+          { label: '⚡ [Fal] Wan 2.1 旗舰图生视频 (fal-ai/wan/v2.1/image-to-video)', value: 'fal-ai/wan/v2.1/image-to-video', provider: 'fal' },
+          { label: '⚡ [Fal] LTX-Video 极速高清 (fal-ai/ltx-video)', value: 'fal-ai/ltx-video', provider: 'fal' },
+          { label: '⚡ [Fal] Kling 1.5 可灵文生视频 (fal-ai/kling-video/v1/standard/text-to-video)', value: 'fal-ai/kling-video/v1/standard/text-to-video', provider: 'fal' },
+          { label: '⚡ [Fal] Kling 1.5 可灵图生视频 (fal-ai/kling-video/v1/standard/image-to-video)', value: 'fal-ai/kling-video/v1/standard/image-to-video', provider: 'fal' },
+          { label: '⚡ [Fal] MiniMax 海螺影视运镜 (fal-ai/minimax/video-01)', value: 'fal-ai/minimax/video-01', provider: 'fal' },
+          { label: '⚡ [Fal] CogVideoX-5B 智谱开源 (fal-ai/cogvideox-5b)', value: 'fal-ai/cogvideox-5b', provider: 'fal' },
+          { label: '⚡ [Fal] HunyuanVideo 混元视频大模型 (fal-ai/hunyuan-video)', value: 'fal-ai/hunyuan-video', provider: 'fal' },
+          { label: '🎨 [Tensor] Wan 2.7 旗舰文生视频 (text2video_wan27)', value: 'text2video_wan27', provider: 'tensorart' },
+          { label: '🎨 [Tensor] Wan 2.7 旗舰图生视频 (image2video_wan27)', value: 'image2video_wan27', provider: 'tensorart' },
+          { label: '🎨 [Tensor] Wan 2.5 官方图生视频 (image2video_wan25)', value: 'image2video_wan25', provider: 'tensorart' },
+          { label: '🎨 [Tensor] Wan 2.2 官方文生视频 (text2video_wan22)', value: 'text2video_wan22', provider: 'tensorart' },
+          { label: '🎨 [Tensor] Wan 2.2 官方图生视频 (image2video_wan22)', value: 'image2video_wan22', provider: 'tensorart' },
+          { label: '🎨 [Tensor] LTX 2.3 官方文生视频 (text2video_ltx23)', value: 'text2video_ltx23', provider: 'tensorart' },
+          { label: '🎨 [Tensor] LTX 2.3 官方图生视频 (image2video_ltx23)', value: 'image2video_ltx23', provider: 'tensorart' },
+          { label: '🎨 [Tensor] 动态壁纸生成 (live_wallpaper)', value: 'live_wallpaper', provider: 'tensorart' },
+          { label: '🇨🇳 [魔搭] Wan 2.1 官方文生视频 (damo/wan2.1-t2v)', value: 'damo/wan2.1-t2v', provider: 'modelscope' },
+          { label: '🇨🇳 [魔搭] Wan 2.1 官方图生视频 (damo/wan2.1-i2v-480p-14b)', value: 'damo/wan2.1-i2v-480p-14b', provider: 'modelscope' },
+          { label: '🇨🇳 [魔搭] CogVideoX-5B 视频模型 (THUDM/CogVideoX-5b)', value: 'THUDM/CogVideoX-5b', provider: 'modelscope' },
+          { label: '🚀 [Agnes] Agnes Video 2.5 Flash (agnes-video-2.5-flash)', value: 'agnes-video-2.5-flash', provider: 'agnes' },
+        ],
+        placeholder: '输入视频大模型端点 ID，或在上方下拉中快速切换',
       },
       {
         name: 'prompt',
         label: '运镜与动态描述 (Prompt)',
-        type: 'text',
+        type: 'textarea',
         default: 'cinematic aerial orbit shot, floating castle islands in the sky, warm golden hour, 8k cinematic masterpiece',
         placeholder: '输入动态运镜与场景描述...',
       },
@@ -810,7 +858,7 @@ export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
       },
       {
         name: 'duration',
-        label: 'duration (秒)',
+        label: '视频时长 (秒)',
         type: 'slider',
         default: 5,
         min: 3,
@@ -819,7 +867,7 @@ export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
       },
       {
         name: 'fps',
-        label: 'fps',
+        label: '渲染帧率 (FPS)',
         type: 'select',
         default: 16,
         options: [
@@ -830,19 +878,22 @@ export const NODE_DEFINITIONS: Record<string, NodeDefinition> = {
       },
       {
         name: 'aspect_ratio',
-        label: 'aspect_ratio',
+        label: '画面比例 (Aspect Ratio)',
         type: 'select',
         default: '16:9',
         options: [
-          { label: '16:9 (电影横屏)', value: '16:9' },
-          { label: '9:16 (短视频竖屏)', value: '9:16' },
-          { label: '1:1 (正方形)', value: '1:1' },
-          { label: '4:3 (经典比例)', value: '4:3' },
+          { label: '16:9 (电影横屏 1280x720)', value: '16:9' },
+          { label: '9:16 (短视频竖屏 720x1280)', value: '9:16' },
+          { label: '1:1 (正方形 1024x1024)', value: '1:1' },
+          { label: '4:3 (经典比例 1024x768)', value: '4:3' },
         ],
       },
     ],
     defaultValues: {
+      targetProvider: 'fal',
       model: 'fal-ai/wan/v2.1/text-to-video',
+      prompt: 'cinematic aerial orbit shot, floating castle islands in the sky, warm golden hour, 8k cinematic masterpiece',
+      negative_prompt: 'jittery motion, fast sudden cut, blur, morphing distortion, low quality',
       duration: 5,
       fps: 16,
       aspect_ratio: '16:9',

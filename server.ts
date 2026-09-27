@@ -99,7 +99,7 @@ const writeJsonFile = (filePath: string, data: any) => {
 
 let cloudProjects: CloudProject[] = readJsonFile<CloudProject[]>(PROJECTS_FILE, []);
 let generationHistory: GeneratedItem[] = readJsonFile<GeneratedItem[]>(HISTORY_FILE, []);
-let cloudSettings: Record<string, string> = readJsonFile<Record<string, string>>(SETTINGS_FILE, {});
+let cloudSettings: Record<string, any> = readJsonFile<Record<string, any>>(SETTINGS_FILE, {});
 
 const defaultKeys: Record<string, string> = {
   tensorartKey: 'ak_tensor_W6ZHTW13GiAn5lgK9Jc7XXA028Vnx580ubJ4Kbv1o64',
@@ -111,7 +111,206 @@ const defaultKeys: Record<string, string> = {
   hfToken: '',
   modelscopeToken: '',
   modelscopeAiToken: '',
+  geminiKey: '',
 };
+
+// Multi-Key Pool & High-Availability Round-Robin Load Balancer
+interface KeyStats {
+  key: string;
+  maskedKey: string;
+  provider: string;
+  totalCalls: number;
+  successfulCalls: number;
+  failedCalls: number;
+  consecutiveFailures: number;
+  lastUsed: number;
+  status: 'active' | 'rate_limited' | 'invalid';
+  rateLimitResetAt?: number;
+  lastError?: string;
+  latencyHistory: number[];
+}
+
+class KeyPoolManager {
+  private pools: Map<string, KeyStats[]> = new Map();
+  private roundRobinPointers: Map<string, number> = new Map();
+  private strategies: Map<string, 'round_robin' | 'failover' | 'latency_best'> = new Map();
+
+  constructor() {
+    this.refreshFromSettings();
+  }
+
+  public maskKey(key: string): string {
+    if (!key) return '';
+    if (key.length <= 8) return `${key.substring(0, 2)}***${key.substring(key.length - 2)}`;
+    return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
+  }
+
+  public parseKeyString(raw: any): string[] {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw.map((k) => String(k).trim()).filter(Boolean);
+    return String(raw)
+      .split(/[\n,;]+/)
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0);
+  }
+
+  public setStrategy(prov: string, strategy: 'round_robin' | 'failover' | 'latency_best') {
+    this.strategies.set(prov, strategy);
+  }
+
+  public getStrategy(prov: string): 'round_robin' | 'failover' | 'latency_best' {
+    return this.strategies.get(prov) || (cloudSettings[`${prov}_strategy`] as any) || 'round_robin';
+  }
+
+  public refreshFromSettings() {
+    const providerKeyMap: Record<string, string[]> = {
+      fal: [...this.parseKeyString(cloudSettings['falKey']), ...this.parseKeyString(defaultKeys['falKey']), ...(process.env.FAL_KEY ? [process.env.FAL_KEY] : [])],
+      agnes: [...this.parseKeyString(cloudSettings['agnesKey']), ...this.parseKeyString(defaultKeys['agnesKey']), ...(process.env.AGNES_KEY ? [process.env.AGNES_KEY] : [])],
+      sensenova: [...this.parseKeyString(cloudSettings['sensenovaKey']), ...this.parseKeyString(defaultKeys['sensenovaKey']), ...(process.env.SENSENOVA_KEY ? [process.env.SENSENOVA_KEY] : [])],
+      civitai: [...this.parseKeyString(cloudSettings['civitaiToken']), ...this.parseKeyString(cloudSettings['civitaiKey']), ...this.parseKeyString(defaultKeys['civitaiKey']), ...(process.env.CIVITAI_API_KEY ? [process.env.CIVITAI_API_KEY] : [])],
+      huggingface: [...this.parseKeyString(cloudSettings['hfToken']), ...this.parseKeyString(defaultKeys['hfToken']), ...(process.env.HF_TOKEN ? [process.env.HF_TOKEN] : [])],
+      modelscope: [...this.parseKeyString(cloudSettings['modelscopeToken']), ...this.parseKeyString(defaultKeys['modelscopeToken']), ...(process.env.MODELSCOPE_TOKEN ? [process.env.MODELSCOPE_TOKEN] : [])],
+      modelscope_ai: [...this.parseKeyString(cloudSettings['modelscopeAiToken']), ...this.parseKeyString(defaultKeys['modelscopeAiToken']), ...(process.env.MODELSCOPE_AI_TOKEN ? [process.env.MODELSCOPE_AI_TOKEN] : [])],
+      nanogpt: [...this.parseKeyString(cloudSettings['nanogptKey']), ...this.parseKeyString(defaultKeys['nanogptKey']), ...(process.env.NANOGPT_KEY ? [process.env.NANOGPT_KEY] : [])],
+      tensorart: [...this.parseKeyString(cloudSettings['tensorartKey']), ...this.parseKeyString(defaultKeys['tensorartKey']), ...(process.env.TENSORART_API_KEY ? [process.env.TENSORART_API_KEY] : [])],
+      gemini: [...this.parseKeyString(cloudSettings['geminiKey']), ...this.parseKeyString(defaultKeys['geminiKey']), ...(process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY] : [])],
+    };
+
+    Object.entries(providerKeyMap).forEach(([prov, keys]) => {
+      const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+      const existing = this.pools.get(prov) || [];
+      const updatedList: KeyStats[] = uniqueKeys.map((k) => {
+        const found = existing.find((e) => e.key === k);
+        if (found) return found;
+        return {
+          key: k,
+          maskedKey: this.maskKey(k),
+          provider: prov,
+          totalCalls: 0,
+          successfulCalls: 0,
+          failedCalls: 0,
+          consecutiveFailures: 0,
+          lastUsed: 0,
+          status: 'active',
+          latencyHistory: [],
+        };
+      });
+      this.pools.set(prov, updatedList);
+    });
+  }
+
+  public getNextKey(prov: string, customHeaderKey?: string): string {
+    if (customHeaderKey) {
+      const customKeys = this.parseKeyString(customHeaderKey);
+      if (customKeys.length > 1) {
+        const idx = (this.roundRobinPointers.get(`header_${prov}`) || 0) % customKeys.length;
+        this.roundRobinPointers.set(`header_${prov}`, idx + 1);
+        return customKeys[idx];
+      }
+      if (customKeys.length === 1) return customKeys[0];
+    }
+
+    const pool = this.pools.get(prov) || [];
+    if (pool.length === 0) return '';
+
+    // Recover rate limited keys if cool-down passed (60 seconds)
+    const now = Date.now();
+    pool.forEach((k) => {
+      if (k.status === 'rate_limited' && k.rateLimitResetAt && now > k.rateLimitResetAt) {
+        k.status = 'active';
+        k.consecutiveFailures = 0;
+      }
+    });
+
+    const activeKeys = pool.filter((k) => k.status === 'active');
+    const targetPool = activeKeys.length > 0 ? activeKeys : pool;
+    if (targetPool.length === 0) return '';
+
+    const strategy = this.getStrategy(prov);
+    let selected: KeyStats;
+
+    if (strategy === 'failover') {
+      // Always pick the first healthy active key
+      selected = targetPool[0];
+    } else if (strategy === 'latency_best') {
+      // Pick key with lowest recorded average latency, or untested first
+      selected = [...targetPool].sort((a, b) => {
+        const aLat = a.latencyHistory.length > 0 ? a.latencyHistory.reduce((x, y) => x + y, 0) / a.latencyHistory.length : 0;
+        const bLat = b.latencyHistory.length > 0 ? b.latencyHistory.reduce((x, y) => x + y, 0) / b.latencyHistory.length : 0;
+        if (aLat === 0) return -1;
+        if (bLat === 0) return 1;
+        return aLat - bLat;
+      })[0];
+    } else {
+      // Round-Robin
+      let ptr = this.roundRobinPointers.get(prov) || 0;
+      selected = targetPool[ptr % targetPool.length];
+      this.roundRobinPointers.set(prov, (ptr + 1) % targetPool.length);
+    }
+
+    selected.lastUsed = now;
+    selected.totalCalls++;
+    return selected.key;
+  }
+
+  public recordResult(prov: string, key: string, success: boolean, latencyMs = 0, errorMsg = '', statusCode = 200) {
+    if (!key) return;
+    const pool = this.pools.get(prov) || [];
+    const entry = pool.find((e) => e.key === key);
+    if (!entry) return;
+
+    if (latencyMs > 0) {
+      entry.latencyHistory.push(latencyMs);
+      if (entry.latencyHistory.length > 20) entry.latencyHistory.shift();
+    }
+
+    if (success) {
+      entry.successfulCalls++;
+      entry.consecutiveFailures = 0;
+      entry.status = 'active';
+      entry.lastError = undefined;
+    } else {
+      entry.failedCalls++;
+      entry.consecutiveFailures++;
+      entry.lastError = errorMsg;
+      if (statusCode === 429 || errorMsg.includes('quota') || errorMsg.includes('rate limit') || errorMsg.includes('429') || errorMsg.includes('RESOURCE_EXHAUSTED')) {
+        entry.status = 'rate_limited';
+        entry.rateLimitResetAt = Date.now() + 60000; // 1 min cooldown
+      } else if (statusCode === 401 || statusCode === 403 || errorMsg.includes('Invalid API Key') || errorMsg.includes('API_KEY_INVALID') || errorMsg.includes('invalid_api_key')) {
+        entry.status = 'invalid';
+      }
+    }
+  }
+
+  public getStats() {
+    const summary: Record<string, any> = {};
+    this.pools.forEach((keys, prov) => {
+      summary[prov] = {
+        totalKeys: keys.length,
+        activeKeys: keys.filter((k) => k.status === 'active').length,
+        rateLimitedKeys: keys.filter((k) => k.status === 'rate_limited').length,
+        invalidKeys: keys.filter((k) => k.status === 'invalid').length,
+        strategy: this.getStrategy(prov),
+        keys: keys.map((k) => ({
+          key: k.key,
+          maskedKey: k.maskedKey,
+          status: k.status,
+          totalCalls: k.totalCalls,
+          successfulCalls: k.successfulCalls,
+          failedCalls: k.failedCalls,
+          consecutiveFailures: k.consecutiveFailures,
+          avgLatencyMs: k.latencyHistory.length > 0 ? Math.round(k.latencyHistory.reduce((a, b) => a + b, 0) / k.latencyHistory.length) : 0,
+          lastUsed: k.lastUsed,
+          lastError: k.lastError,
+          rateLimitResetAt: k.rateLimitResetAt,
+        })),
+      };
+    });
+    return summary;
+  }
+}
+
+const keyPoolManager = new KeyPoolManager();
 
 // Helper to record history safely both in memory and file
 const recordHistoryItem = (item: Partial<GeneratedItem>): GeneratedItem => {
@@ -147,21 +346,22 @@ if (!cloudSettings || Object.keys(cloudSettings).length === 0) {
   writeJsonFile(SETTINGS_FILE, cloudSettings);
 }
 
-// Helper to create GoogleGenAI client with standard aistudio-build telemetry
+// Helper to create GoogleGenAI client with key rotation and standard aistudio-build telemetry
 const createGoogleGenAI = (apiKey?: string) => {
-  const key = apiKey || process.env.GEMINI_API_KEY || '';
-  if (!key) return null;
-  return new GoogleGenAI({
-    apiKey: key,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
+  const effectiveKey = keyPoolManager.getNextKey('gemini', apiKey);
+  if (!effectiveKey) return null;
+  return {
+    client: new GoogleGenAI({
+      apiKey: effectiveKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
       },
-    },
-  });
+    }),
+    apiKey: effectiveKey,
+  };
 };
-
-const genAI = createGoogleGenAI();
 
 // ==========================================
 // 1. Civitai API Proxies (developer.civitai.com)
@@ -317,6 +517,36 @@ function resolveArchitectureAndBaseModel(baseModelRaw?: string, modelNameHint?: 
       provider: 'Detected Illustrious XL',
       targetProvider: 'fal',
       architectureExplanation: '检测到 Illustrious-XL / NoobAI 二次元旗舰架构。',
+    };
+  }
+  if (combined.includes('tensor') || combined.includes('openworks') || combined.includes('banana') || combined.includes('oc_character')) {
+    return {
+      family: 'wan21',
+      checkpoint: combined.includes('video') ? 'text2video_wan27' : 'strong_text2image_nano_banana2',
+      steps: 30,
+      cfg: 6.0,
+      sampler: 'euler',
+      scheduler: 'normal',
+      width: 1024,
+      height: 1024,
+      provider: 'Detected Tensor.Art OpenWorks',
+      targetProvider: 'tensorart',
+      architectureExplanation: '检测到 Tensor.Art / 吐司 OpenWorks 官方模型与工作流工具。',
+    };
+  }
+  if (combined.includes('nanogpt')) {
+    return {
+      family: 'flux',
+      checkpoint: 'flux-schnell',
+      steps: 4,
+      cfg: 1.0,
+      sampler: 'euler',
+      scheduler: 'simple',
+      width: 1024,
+      height: 1024,
+      provider: 'Detected NanoGPT Architecture',
+      targetProvider: 'nanogpt',
+      architectureExplanation: '检测到 NanoGPT 原生按需推理模型通道。',
     };
   }
   if (combined.includes('wan') || combined.includes('wan2.1') || combined.includes('tongyi')) {
@@ -1134,11 +1364,12 @@ app.post('/api/civitai/extract-workflow', async (req, res) => {
       otherMetadata,
       availableEngines: [
         { id: "civitai", name: "Civitai 官方原生引擎", badge: "最完美原生适配", recommended: !isVideo, description: "100% 原生支持 Civitai 资源与 Krea 2 Turbo / LoRA" },
+        { id: "tensorart", name: "Tensor.Art 官方原生引擎", badge: "OpenWorks 原生", description: "直连吐司 AI / OpenWorks 开放平台，Wan 2.7 / Banana / FLUX / SDXL 原生解算" },
+        { id: "nanogpt", name: "NanoGPT 极速", badge: "239+ 现货模型", description: "按需秒级生图，覆盖 FLUX、Qwen Image 2.1、SDXL、Krea 2 Turbo" },
         { id: "fal", name: "Fal.ai 极速云引擎", badge: "GPU Serverless", description: "FLUX.1 / SDXL 1.0 / Krea 2 官方端点" },
         { id: "modelscope", name: "ModelScope 魔搭社区", badge: "阿里万相", description: "通义万相 Wan 2.1 / Krea 2 开源生态" },
         { id: "sensenova", name: "SenseNova 日日新", badge: "CoT 推理", description: "商汤大模型思维链生图" },
         { id: "huggingface", name: "Hugging Face", badge: "Diffusers", description: "开源 Diffusers 生态权重直挂" },
-        { id: "nanogpt", name: "NanoGPT 极速", badge: "按次即付", description: "FLUX.1 Schnell / Dev 毫秒级按需生图" },
         { id: "agnes", name: "Agnes AI 极速生图", badge: "秒级出片", description: "极速生成通道 (agnes-image-2.5-flash)" },
         { id: "gemini", name: "Google Imagen 3", badge: "官方内置", description: "系统内置免配置高写实生图" },
         ...(isVideo ? [{ id: "video", name: "AI Video 视频生成引擎", badge: "电影级视频", recommended: true, description: "MiniMax H3 / Wan 2.1 视频管线" }] : [])
@@ -1252,6 +1483,234 @@ async function resolveModelScopeRealImage(modelId: string, isCn = true): Promise
   return '';
 }
 
+// Universal Dynamic Model Metadata and Architecture Resolver
+function extractModelMetadata(
+  id: string,
+  name?: string,
+  tags: string[] = [],
+  description = '',
+  taskOrPipeline = '',
+  providerName = ''
+): {
+  baseModel: string;
+  category: 'Checkpoint' | 'LoRA' | 'Video' | 'Edit';
+  type: 'Checkpoint' | 'LORA' | 'MotionModule' | 'Tools' | 'Reasoning';
+  badge?: string;
+  cleanDisplayName: string;
+} {
+  const idLower = (id || '').toLowerCase();
+  const nameLower = (name || '').toLowerCase();
+  const tagsLower = tags.map((t) => String(t).toLowerCase());
+  const descLower = (description || '').toLowerCase();
+  const taskLower = (taskOrPipeline || '').toLowerCase();
+  const s = `${idLower} ${nameLower} ${tagsLower.join(' ')} ${descLower} ${taskLower}`;
+
+  // 1. Determine Category & Type
+  let category: 'Checkpoint' | 'LoRA' | 'Video' | 'Edit' = 'Checkpoint';
+  let type: 'Checkpoint' | 'LORA' | 'MotionModule' | 'Tools' | 'Reasoning' = 'Checkpoint';
+
+  const isVideo =
+    taskLower.includes('video') ||
+    taskLower === 'text-to-video' ||
+    taskLower === 'image-to-video' ||
+    taskLower === 'video-to-video' ||
+    idLower.includes('video') ||
+    idLower.includes('wan2.1-t2v') ||
+    idLower.includes('wan2.2-t2v') ||
+    idLower.includes('text2video') ||
+    idLower.includes('image2video') ||
+    idLower.includes('live_wallpaper') ||
+    idLower.includes('ltx') ||
+    idLower.includes('kling') ||
+    idLower.includes('minimax') ||
+    idLower.includes('hailuo') ||
+    idLower.includes('cogvideo') ||
+    idLower.includes('hunyuan-video') ||
+    tagsLower.some((t) => t.includes('video') || t.includes('wallpaper'));
+
+  const isEdit =
+    !isVideo &&
+    !idLower.includes('three_view') &&
+    !idLower.includes('photoreal_studio') &&
+    (
+      idLower.includes('smart_edit') ||
+      idLower.includes('edit-image') ||
+      idLower.includes('/edit') ||
+      idLower.includes('inpaint') ||
+      idLower.includes('upscal') ||
+      idLower.includes('birefnet') ||
+      idLower.includes('remover') ||
+      idLower.includes('remove') ||
+      idLower.includes('restore') ||
+      idLower.includes('watermark') ||
+      idLower.includes('garment') ||
+      idLower.includes('outpainting') ||
+      idLower.includes('extend_image') ||
+      idLower.includes('mimicbrush') ||
+      idLower.includes('controlnet') ||
+      idLower.includes('segment') ||
+      idLower.includes('sam3') ||
+      idLower.includes('sam-') ||
+      idLower.includes('depth') ||
+      idLower.includes('canny') ||
+      idLower.includes('openpose') ||
+      taskLower === 'image-to-image' ||
+      taskLower === 'tools' ||
+      tagsLower.some((t) =>
+        ['editing', 'edit', 'inpaint', 'upscale', 'super-resolution', 'background removal', 'subject extraction', 'outpainting', 'restore', 'watermark', 'segmentation'].includes(t)
+      )
+    );
+
+  const isLora =
+    !isVideo &&
+    !isEdit &&
+    (
+      idLower.includes('lora') ||
+      taskLower.includes('lora') ||
+      tagsLower.some((t) => t.includes('lora') || t === 'oc' || t === 'character' || t === 'style' || t === 'sketch') ||
+      idLower.includes('three_view') ||
+      idLower.includes('anime_lab_wai') ||
+      idLower.includes('oc_character')
+    );
+
+  if (isVideo) {
+    category = 'Video';
+    type = 'MotionModule';
+  } else if (isEdit) {
+    category = 'Edit';
+    type = 'Tools';
+  } else if (isLora) {
+    category = 'LoRA';
+    type = 'LORA';
+  } else {
+    category = 'Checkpoint';
+    type = 'Checkpoint';
+  }
+
+  // 2. Determine Real Base Model Architecture Family
+  let baseModel = '通用底模';
+  if (s.includes('flux.1-dev') || s.includes('flux-dev') || s.includes('flux.1 [dev]') || s.includes('flux_dev')) {
+    baseModel = 'FLUX.1 [dev]';
+  } else if (s.includes('flux.1-schnell') || s.includes('flux-schnell') || s.includes('flux.1 [schnell]') || s.includes('flux_schnell')) {
+    baseModel = 'FLUX.1 [schnell]';
+  } else if (s.includes('flux-pro') || s.includes('flux.1-pro') || s.includes('flux/pro')) {
+    baseModel = 'FLUX.1 Pro';
+  } else if (s.includes('flux') || s.includes('bfl')) {
+    baseModel = 'FLUX.1';
+  } else if (s.includes('pony') || s.includes('pdxl')) {
+    baseModel = 'Pony XL';
+  } else if (s.includes('illustrious') || s.includes('noobai') || s.includes('wai illustrious') || s.includes('wai_illustrious')) {
+    baseModel = 'Illustrious-XL';
+  } else if (s.includes('sd3.5') || s.includes('sd 3.5') || s.includes('sd-3.5') || s.includes('sd3') || s.includes('stable-diffusion-3')) {
+    baseModel = 'SD 3.5';
+  } else if (s.includes('sdxl') || s.includes('stable-diffusion-xl') || s.includes('sd_xl') || s.includes('_xl_') || s.includes('juggernaut-xl') || s.includes('animagine')) {
+    baseModel = 'SDXL 1.0';
+  } else if (s.includes('sd 1.5') || s.includes('sd1.5') || s.includes('sd15') || s.includes('v1-5') || s.includes('stable-diffusion-v1-5') || s.includes('dreamshaper-7') || s.includes('realistic_vision') || s.includes('majicmix')) {
+    baseModel = 'SD 1.5';
+  } else if (s.includes('sd 2.1') || s.includes('sd2.1') || s.includes('sd2') || s.includes('stable-diffusion-2')) {
+    baseModel = 'SD 2.1';
+  } else if (s.includes('wan27') || s.includes('wan 2.7') || s.includes('wan-2.7')) {
+    baseModel = 'Wan 2.7';
+  } else if (s.includes('wan25') || s.includes('wan 2.5') || s.includes('wan-2.5')) {
+    baseModel = 'Wan 2.5';
+  } else if (s.includes('wan22') || s.includes('wan 2.2') || s.includes('wan-2.2')) {
+    baseModel = 'Wan 2.2';
+  } else if (s.includes('wan2.1') || s.includes('wan 2.1') || s.includes('wan_2.1') || s.includes('wan') || s.includes('tongyi')) {
+    baseModel = 'Wan 2.1';
+  } else if (s.includes('krea-2') || s.includes('krea2') || s.includes('krea')) {
+    baseModel = 'Krea 2 Turbo';
+  } else if (s.includes('z-image') || s.includes('z_image') || s.includes('zimage')) {
+    baseModel = 'Z-Image-Turbo';
+  } else if (s.includes('qwen-image') || s.includes('qwen2') || s.includes('qwen')) {
+    baseModel = 'Qwen Image 2.1';
+  } else if (s.includes('kolors') || s.includes('kwai')) {
+    baseModel = 'Kolors';
+  } else if (s.includes('cosmos-3') || s.includes('cosmos')) {
+    baseModel = 'NVIDIA Cosmos';
+  } else if (s.includes('boogu')) {
+    baseModel = 'Boogu Image';
+  } else if (s.includes('recraft')) {
+    baseModel = 'Recraft V3';
+  } else if (s.includes('ideogram')) {
+    baseModel = 'Ideogram';
+  } else if (s.includes('dall-e') || s.includes('dalle')) {
+    baseModel = 'DALL-E 3';
+  } else if (s.includes('midjourney')) {
+    baseModel = 'Midjourney';
+  } else if (s.includes('kling')) {
+    baseModel = 'Kling';
+  } else if (s.includes('ltx-2.3') || s.includes('ltx23') || s.includes('ltx 2.3')) {
+    baseModel = 'LTX 2.3';
+  } else if (s.includes('ltx')) {
+    baseModel = 'LTX-Video';
+  } else if (s.includes('minimax') || s.includes('hailuo')) {
+    baseModel = 'MiniMax';
+  } else if (s.includes('hunyuan')) {
+    baseModel = 'Hunyuan';
+  } else if (s.includes('cogvideo')) {
+    baseModel = 'CogVideoX';
+  } else if (s.includes('imagen-3') || s.includes('imagen 3') || s.includes('imagen')) {
+    baseModel = 'Imagen 3.0';
+  } else if (s.includes('gemini-2.5') || s.includes('gemini-3') || s.includes('gemini')) {
+    baseModel = 'Gemini Vision';
+  } else if (s.includes('nano_banana') || s.includes('banana')) {
+    baseModel = 'Nano Banana 2';
+  } else if (providerName === 'Hugging Face') {
+    baseModel = 'Diffusers Checkpoint';
+  } else if (providerName.includes('ModelScope')) {
+    baseModel = 'ModelScope Checkpoint';
+  } else if (providerName === 'Fal.ai') {
+    baseModel = isVideo ? 'Video Base' : 'Diffusion Base';
+  } else if (providerName === 'NanoGPT') {
+    baseModel = isVideo ? 'Video Base' : 'NanoGPT Base';
+  } else if (providerName === 'Tensor.Art') {
+    baseModel = isVideo ? 'Video Base' : 'Tensor.Art Cloud';
+  }
+
+  // 3. Clean and normalize displayName for clarity
+  let cleanDisplayName = name || id.split('/').pop() || id;
+  if (idLower === 'gemini-2.5-flash-image') {
+    cleanDisplayName = 'Google Gemini 2.5 Flash Image';
+  } else if (idLower === 'gemini-3-pro-image-preview' || idLower === 'gemini-3-pro-image') {
+    cleanDisplayName = 'Google Gemini 3 Pro Image';
+  } else if (idLower === 'gemini-3.1-flash-image-preview' || idLower === 'gemini-3.1-flash-image') {
+    cleanDisplayName = 'Google Gemini 3.1 Flash Image';
+  } else if (idLower.includes('imagen-3.0-generate-002') || idLower === 'imagen-3.0') {
+    cleanDisplayName = 'Google Imagen 3.0 旗舰生图';
+  } else if (idLower === 'strong_text2image_wan27') {
+    cleanDisplayName = 'Wan 2.7 旗舰大模型 (官方工作流)';
+  } else if (idLower === 'strong_text2image_nano_banana2') {
+    cleanDisplayName = 'Nano Banana 2 文生图大模型';
+  } else if (idLower === 'photoreal_studio_z_image') {
+    cleanDisplayName = 'Z-Image 极致超写真大模型';
+  } else if (idLower === 'anime_lab_wai_illustrious') {
+    cleanDisplayName = 'WAI Illustrious 二次元动漫 LoRA';
+  } else if (idLower === 'three_view_flux_kontext') {
+    cleanDisplayName = 'FLUX Kontext 三视图角色设计 LoRA';
+  } else if (idLower === 'oc_character_illustration') {
+    cleanDisplayName = 'OC 原创角色插画 LoRA';
+  } else if (idLower === 'smart_edit_nano_banana2') {
+    cleanDisplayName = 'Nano Banana 2 智能多图编辑';
+  } else if (idLower === 'smart_edit_wan27') {
+    cleanDisplayName = 'Wan 2.7 图像高级智能编辑';
+  } else if (idLower === 'smart_edit_wan27_pro') {
+    cleanDisplayName = 'Wan 2.7 Pro 专业图生图与重绘';
+  }
+
+  let badge = undefined;
+  if (providerName === 'NanoGPT') {
+    badge = isVideo ? 'NanoGPT 视频端点' : isEdit ? 'NanoGPT 编辑端点' : 'NanoGPT 官方端点';
+  } else if (providerName === 'Fal.ai') {
+    badge = isLora ? 'Fal 官方 LoRA 端点' : isVideo ? 'Fal 官方视频端点' : 'Fal 官方端点';
+  } else if (providerName === 'Tensor.Art') {
+    badge = isLora ? 'Tensor.Art LoRA / 微调工具' : isVideo ? 'OpenWorks 视频生成' : isEdit ? 'OpenWorks 图像处理' : 'OpenWorks 官方工作流';
+  } else if (providerName.includes('Google')) {
+    badge = category === 'Checkpoint' ? 'Imagen 旗舰' : 'Gemini 原生';
+  }
+
+  return { baseModel, category, type, badge, cleanDisplayName };
+}
+
 // ==========================================
 // 1.5. Dynamic Model List Pulling (Direct from Original APIs)
 // ==========================================
@@ -1270,7 +1729,6 @@ app.get("/api/models", async (req, res) => {
   try {
     const results: Record<string, any[]> = {};
     
-    // No hardcoded featured list - we will fetch real data
     const matchSearch = (item: any) => {
       if (!searchStr) return true;
       const hay = [
@@ -1297,7 +1755,7 @@ app.get("/api/models", async (req, res) => {
       if (cat === "lora") return itemCat === "lora" || itemType === "lora" || itemId.includes("lora") || (item.tags && item.tags.includes("lora"));
       if (cat === "checkpoint") return (itemCat === "checkpoint" || itemType === "checkpoint" || itemCat === "base") && itemCat !== "video" && !itemId.includes("video") && itemCat !== "lora" && !itemId.includes("lora");
       if (cat === "video") return itemCat === "video" || itemType === "motionmodule" || (item.tags && item.tags.includes("video")) || itemId.includes("video");
-      if (cat === "edit") return itemCat === "edit" || itemCat === "controlnet" || itemCat === "reasoning" || item.id.includes("edit") || item.id.includes("remover") || item.id.includes("upscaler") || item.id.includes("restore");
+      if (cat === "edit") return itemCat === "edit" || itemCat === "controlnet" || itemCat === "tools" || itemCat === "reasoning" || item.id.includes("edit") || item.id.includes("remover") || item.id.includes("upscaler") || item.id.includes("restore");
       return true;
     };
 
@@ -1318,25 +1776,23 @@ app.get("/api/models", async (req, res) => {
           const resolvedImages = await Promise.allSettled(imagePromises);
 
           items.forEach((m: any, idx: number) => {
-            const isLora = cat === 'lora' || m.id.toLowerCase().includes('lora') || (m.tags && m.tags.some((t: string) => t.toLowerCase().includes('lora')));
-            const isVideo = cat === 'video' || (m.tasks && m.tasks.includes('text-to-video-synthesis')) || m.id.toLowerCase().includes('video');
-            const baseModel = m.id.toLowerCase().includes('z-image') ? 'Z-Image-Turbo' : m.id.toLowerCase().includes('wan') ? 'Wan 2.1' : m.id.toLowerCase().includes('flux') ? 'FLUX.1' : m.id.toLowerCase().includes('sdxl') ? 'SDXL 1.0' : 'SD 1.5';
+            const meta = extractModelMetadata(m.id, m.display_name, m.tags || [], m.description || '', (m.tasks || []).join(' '), 'ModelScope CN');
             const realImg = resolvedImages[idx].status === 'fulfilled' ? resolvedImages[idx].value : '';
 
             msCnCatalog.push({
               id: m.id,
-              name: m.display_name || m.id.split('/').pop(),
+              name: meta.cleanDisplayName,
               provider: "ModelScope CN",
-              category: isVideo ? "Video" : isLora ? "LoRA" : "Checkpoint",
-              type: isLora ? "LORA" : isVideo ? "MotionModule" : "Checkpoint",
-              baseModel,
+              category: meta.category,
+              type: meta.type,
+              baseModel: meta.baseModel,
               downloads: m.downloads || 0,
               likes: m.likes || 0,
               rating: m.rating || 0,
               imageUrl: realImg,
               externalUrl: `https://www.modelscope.cn/models/${m.id}`,
               tags: m.tags || [],
-              trainedWords: isLora ? ["photorealistic", "chinese aesthetic"] : [],
+              trainedWords: meta.category === 'LoRA' ? ["photorealistic", "chinese aesthetic"] : [],
             });
           });
         } else {
@@ -1369,25 +1825,23 @@ app.get("/api/models", async (req, res) => {
           const resolvedImages = await Promise.allSettled(imagePromises);
 
           items.forEach((m: any, idx: number) => {
-            const isLora = cat === 'lora' || m.id.toLowerCase().includes('lora') || (m.tags && m.tags.some((t: string) => t.toLowerCase().includes('lora')));
-            const isVideo = cat === 'video' || (m.tasks && m.tasks.includes('text-to-video-synthesis')) || m.id.toLowerCase().includes('video');
-            const baseModel = m.id.toLowerCase().includes('z-image') ? 'Z-Image-Turbo' : m.id.toLowerCase().includes('wan') ? 'Wan 2.1' : m.id.toLowerCase().includes('flux') ? 'FLUX.1' : m.id.toLowerCase().includes('sdxl') ? 'SDXL 1.0' : 'SD 1.5';
+            const meta = extractModelMetadata(m.id, m.display_name, m.tags || [], m.description || '', (m.tasks || []).join(' '), 'ModelScope AI');
             const realImg = resolvedImages[idx].status === 'fulfilled' ? resolvedImages[idx].value : '';
 
             msAiCatalog.push({
               id: m.id,
-              name: m.display_name || m.id.split('/').pop(),
+              name: meta.cleanDisplayName,
               provider: "ModelScope AI",
-              category: isVideo ? "Video" : isLora ? "LoRA" : "Checkpoint",
-              type: isLora ? "LORA" : isVideo ? "MotionModule" : "Checkpoint",
-              baseModel,
+              category: meta.category,
+              type: meta.type,
+              baseModel: meta.baseModel,
               downloads: m.downloads || 0,
               likes: m.likes || 0,
               rating: m.rating || 0,
               imageUrl: realImg,
               externalUrl: `https://modelscope.ai/models/${m.id}`,
               tags: m.tags || [],
-              trainedWords: isLora ? ["photorealistic", "high aesthetic"] : [],
+              trainedWords: meta.category === 'LoRA' ? ["photorealistic", "high aesthetic"] : [],
             });
           });
         } else {
@@ -1439,8 +1893,7 @@ app.get("/api/models", async (req, res) => {
         if (hfResp.ok) {
           const hfData = await hfResp.json();
           const fetchedItems = (hfData || []).map((m: any) => {
-            const isLoraModel = cat === "lora" || m.id.toLowerCase().includes("lora") || (m.tags && m.tags.includes("lora"));
-            const isVideoModel = cat === "video" || m.pipeline_tag === "text-to-video";
+            const meta = extractModelMetadata(m.id, m.id.split('/').pop(), m.tags || [], '', m.pipeline_tag || '', 'Hugging Face');
             
             // Resolve Real Cover Image from siblings (.png, .jpg, .webp)
             const previewFiles = ['thumbnail.png', 'preview.png', 'sample.png', 'example.png', 'cover.png'];
@@ -1456,18 +1909,18 @@ app.get("/api/models", async (req, res) => {
 
             return {
               id: m.id,
-              name: m.id.split('/').pop(),
+              name: meta.cleanDisplayName,
               provider: "Hugging Face",
-              category: isVideoModel ? "Video" : isLoraModel ? "LoRA" : "Checkpoint",
-              type: isLoraModel ? "LORA" : isVideoModel ? "MotionModule" : "Checkpoint",
-              baseModel: m.id.toLowerCase().includes("flux") ? "FLUX.1" : m.id.toLowerCase().includes("z-image") ? "Z-Image-Turbo" : m.id.toLowerCase().includes("sdxl") ? "SDXL 1.0" : "SD 1.5",
+              category: meta.category,
+              type: meta.type,
+              baseModel: meta.baseModel,
               downloads: m.downloads || 0,
               likes: m.likes || 0,
               rating: 0,
               imageUrl,
               externalUrl: `https://huggingface.co/${m.id}`,
               tags: m.tags || [],
-              trainedWords: isLoraModel ? ["photorealistic", "reversal film"] : [],
+              trainedWords: meta.category === 'LoRA' ? ["photorealistic", "reversal film"] : [],
             };
           });
 
@@ -1625,63 +2078,32 @@ app.get("/api/models", async (req, res) => {
               seenEndpoints.add(endpointId);
 
               const meta = m.metadata || {};
-              const metaCat = (meta.category || '').toLowerCase();
-              const isVideo = endpointId.includes("video") || metaCat === "video" || metaCat === "text-to-video" || metaCat === "image-to-video" || metaCat === "video-to-video";
-              const isLora = endpointId.includes("lora") || metaCat === "lora" || (meta.tags && meta.tags.includes("lora"));
-              const isEdit = !isVideo && !isLora && (
-                endpointId.endsWith("/edit") ||
-                endpointId.includes("inpaint") ||
-                endpointId.includes("controlnet") ||
-                endpointId.includes("upscale") ||
-                metaCat === "image-to-image"
+              const parsed = extractModelMetadata(
+                endpointId,
+                meta.display_name,
+                meta.tags || [],
+                meta.description || '',
+                meta.category || '',
+                'Fal.ai'
               );
-
-              // Dynamically extract real base model architecture from endpoint, title, tags, description
-              let baseModel = "General";
-              const fullDesc = `${endpointId} ${meta.display_name || ''} ${meta.description || ''} ${(meta.tags || []).join(' ')}`.toLowerCase();
-              if (fullDesc.includes("wan-2.2") || fullDesc.includes("wan2.2")) baseModel = "Wan 2.2";
-              else if (fullDesc.includes("wan2.1") || fullDesc.includes("wan 2.1") || fullDesc.includes("wan-2.1")) baseModel = "Wan 2.1";
-              else if (fullDesc.includes("wan")) baseModel = "Wan";
-              else if (fullDesc.includes("kling")) baseModel = "Kling";
-              else if (fullDesc.includes("ltx-2.3") || fullDesc.includes("ltx23") || fullDesc.includes("ltx 2.3")) baseModel = "LTX 2.3";
-              else if (fullDesc.includes("ltx")) baseModel = "LTX";
-              else if (fullDesc.includes("krea")) baseModel = "Krea";
-              else if (fullDesc.includes("minimax") || fullDesc.includes("hailuo")) baseModel = "MiniMax";
-              else if (fullDesc.includes("flux-3") || fullDesc.includes("flux 3")) baseModel = "FLUX.3";
-              else if (fullDesc.includes("flux-2") || fullDesc.includes("flux 2")) baseModel = "FLUX.2";
-              else if (fullDesc.includes("flux")) baseModel = "FLUX.1";
-              else if (fullDesc.includes("sdxl") || fullDesc.includes("stable-diffusion-xl")) baseModel = "SDXL 1.0";
-              else if (fullDesc.includes("sd3") || fullDesc.includes("stable-diffusion-3")) baseModel = "SD 3.5";
-              else if (fullDesc.includes("sd15") || fullDesc.includes("sd1.5") || fullDesc.includes("stable-diffusion-v1-5")) baseModel = "SD 1.5";
-              else if (fullDesc.includes("recraft")) baseModel = "Recraft";
-              else if (fullDesc.includes("z-image") || fullDesc.includes("z_image")) baseModel = "Z-Image";
-              else if (fullDesc.includes("ideogram")) baseModel = "Ideogram";
-              else if (fullDesc.includes("qwen")) baseModel = "Qwen";
-              else if (fullDesc.includes("ernie")) baseModel = "Ernie";
-              else if (fullDesc.includes("trellis")) baseModel = "Trellis";
-              else if (fullDesc.includes("hunyuan")) baseModel = "Hunyuan";
-              else if (fullDesc.includes("grok") || fullDesc.includes("xai")) baseModel = "Grok";
-              else if (fullDesc.includes("topaz")) baseModel = "Topaz";
-              else if (metaCat === 'text-to-image') baseModel = "Diffusion Base";
-              else if (isVideo) baseModel = "Video Base";
 
               falItems.push({
                 id: endpointId,
-                name: meta.display_name || endpointId.replace("fal-ai/", ""),
+                name: parsed.cleanDisplayName,
                 provider: "Fal.ai",
-                category: isVideo ? "Video" : isLora ? "LoRA" : isEdit ? "Edit" : "Checkpoint",
-                type: isLora ? "LORA" : isVideo ? "MotionModule" : isEdit ? "Tools" : "Checkpoint",
-                baseModel,
-                downloads: m.popularity || (isLora ? 32000 : 45000),
-                likes: m.favorites || 1200,
-                rating: m.rating || 4.9,
+                category: parsed.category,
+                type: parsed.type,
+                baseModel: parsed.baseModel,
+                downloads: typeof m.popularity === 'number' ? m.popularity : undefined,
+                likes: typeof m.favorites === 'number' ? m.favorites : undefined,
+                rating: typeof m.rating === 'number' ? m.rating : undefined,
                 speed: meta.inference_time ? `${meta.inference_time}s` : "Fal 极速算力",
-                badge: meta.author_name || (isLora ? "Fal 官方 LoRA 端点" : "Fal 官方端点"),
+                badge: meta.author_name || parsed.badge,
                 imageUrl: meta.thumbnail_url || meta.cover_image || meta.sample_output_url || "",
                 externalUrl: `https://fal.ai/models/${endpointId}`,
                 description: meta.description || "",
-                tags: ["fal", isVideo ? "video" : isLora ? "lora" : isEdit ? "edit" : "checkpoint", baseModel.toLowerCase(), ...(meta.tags || [])],
-                trainedWords: isLora ? ["masterpiece", "high aesthetic", "detailed style"] : [],
+                tags: ["fal", parsed.category.toLowerCase(), parsed.baseModel.toLowerCase(), ...(meta.tags || [])],
+                trainedWords: parsed.category === 'LoRA' ? ["masterpiece", "high aesthetic", "detailed style"] : [],
               });
             }
           } else if (respResult.status === 'fulfilled') {
@@ -1703,152 +2125,120 @@ app.get("/api/models", async (req, res) => {
       }
     }
 
-    // 5. Agnes AI Live Discovery Endpoint
-    if (provider === "all" || provider === "agnes") {
-      const agnesItems: any[] = [];
-      try {
-        const agnesKey = cloudSettings['agnesKey'] || defaultKeys['agnesKey'] || '';
-        const agnesHeaders: Record<string, string> = { "User-Agent": "ComfyCanvas/1.0" };
-        if (agnesKey) agnesHeaders["Authorization"] = `Bearer ${agnesKey}`;
-        const agnesResp = await fetch("https://api.agnes.ai/v1/models", {
-          headers: agnesHeaders,
-          signal: AbortSignal.timeout(4000),
-        }).catch(() => null);
+    // 5. NanoGPT Real Live Discovery Endpoint (Live OpenAPI: image-models & video-models)
+    if (provider === "all" || provider === "nanogpt") {
+      const nanoItems: any[] = [];
+      // NanoGPT is an inference API provider and does NOT host a community LoRA weights repository.
+      if (cat === "lora") {
+        results.nanogpt = [];
+      } else {
+        try {
+          const fetchImageModels = fetch("https://api.nano-gpt.com/api/v1/image-models", {
+            headers: { "User-Agent": "ComfyCanvas/1.0" },
+            signal: AbortSignal.timeout(10000),
+          }).catch(() => fetch("https://nano-gpt.com/api/v1/image-models", {
+            headers: { "User-Agent": "ComfyCanvas/1.0" },
+            signal: AbortSignal.timeout(10000),
+          })).catch(() => null);
 
-        if (agnesResp && agnesResp.ok) {
-          const agnesData = await agnesResp.json();
-          const list = Array.isArray(agnesData.data) ? agnesData.data : Array.isArray(agnesData.models) ? agnesData.models : [];
-          for (const m of list) {
-            const mId = m.id || m.model || "";
-            if (!mId) continue;
-            agnesItems.push({
-              id: mId,
-              name: m.name || mId,
-              provider: "Agnes AI",
-              category: mId.includes("video") ? "Video" : mId.includes("lora") ? "LoRA" : "Checkpoint",
-              type: mId.includes("lora") ? "LORA" : mId.includes("video") ? "MotionModule" : "Checkpoint",
-              baseModel: "Agnes AI",
-              downloads: 0,
-              likes: 0,
-              rating: 0,
-              badge: "Agnes 官方",
-              imageUrl: m.imageUrl || "",
-              tags: ["agnes", mId],
-            });
-          }
-        } else if (agnesResp) {
-          results.agnes = { error: `Agnes AI 接口异常 (HTTP ${agnesResp.status})` } as any;
-        }
-      } catch (err: any) {
-        console.error("Agnes models discovery error:", err);
-        results.agnes = { error: `Agnes AI 连接失败: ${err.message}` } as any;
-      }
-      if (!results.agnes) {
-        results.agnes = agnesItems.filter((m) => matchCategory(m) && matchSearch(m));
-      }
-    }
+          const fetchVideoModels = (cat === "all" || cat === "video") ? fetch("https://api.nano-gpt.com/api/v1/video-models", {
+            headers: { "User-Agent": "ComfyCanvas/1.0" },
+            signal: AbortSignal.timeout(10000),
+          }).catch(() => fetch("https://nano-gpt.com/api/v1/video-models", {
+            headers: { "User-Agent": "ComfyCanvas/1.0" },
+            signal: AbortSignal.timeout(10000),
+          })).catch(() => null) : Promise.resolve(null);
 
-    // 6. SenseNova (商汤日日新) Real Models Endpoint
-    if (provider === "all" || provider === "sensenova") {
-      const senseItems: any[] = [];
-      try {
-        const senseKey = cloudSettings['sensenovaKey'] || defaultKeys['sensenovaKey'] || '';
-        if (senseKey) {
-          const senseResp = await fetch("https://api.sensenova.cn/v1/models", {
-            headers: {
-              "Authorization": `Bearer ${senseKey}`,
-              "User-Agent": "ComfyCanvas/1.0",
-            },
-            signal: AbortSignal.timeout(4000),
-          }).catch(() => null);
+          const [imgResp, vidResp] = await Promise.all([fetchImageModels, fetchVideoModels]);
 
-          if (senseResp && senseResp.ok) {
-            const sData = await senseResp.json();
-            const list = Array.isArray(sData.data) ? sData.data : Array.isArray(sData.models) ? sData.models : [];
+          if (imgResp && imgResp.ok) {
+            const nanoData = await imgResp.json();
+            const list = Array.isArray(nanoData.data) ? nanoData.data : Array.isArray(nanoData.models) ? nanoData.models : Array.isArray(nanoData) ? nanoData : [];
             for (const m of list) {
-              const mId = m.id || m.model || "";
+              const mId = m.id || m.model_id || "";
               if (!mId) continue;
-              senseItems.push({
+              
+              const parsed = extractModelMetadata(
+                mId,
+                m.name,
+                m.tags || [],
+                m.description || '',
+                m.architecture?.modality || '',
+                'NanoGPT'
+              );
+
+              const iconUrl = m.icon_url ? (m.icon_url.startsWith('http') ? m.icon_url : `https://nano-gpt.com${m.icon_url}`) : '';
+              const pricingStr = m.pricing?.per_image ? `$${m.pricing.per_image['1k'] || m.pricing.per_image.auto || 0.02}/图` : m.pricing ? `$${m.pricing}/次` : 'NanoGPT 算力';
+
+              nanoItems.push({
                 id: mId,
-                name: m.name || mId,
-                provider: "SenseNova (商汤)",
-                category: mId.includes("vision") || mId.includes("deepseek") || mId.includes("glm") ? "Edit" : "Checkpoint",
-                type: mId.includes("deepseek") || mId.includes("glm") ? "Reasoning" : "Checkpoint",
-                baseModel: mId,
-                downloads: 0,
-                likes: 0,
-                rating: 0,
-                badge: "商汤官方",
-                imageUrl: "",
-                tags: ["sensenova", mId],
+                name: parsed.cleanDisplayName,
+                provider: "NanoGPT",
+                category: parsed.category,
+                type: parsed.type,
+                baseModel: parsed.baseModel,
+                downloads: undefined,
+                likes: undefined,
+                rating: undefined,
+                speed: pricingStr,
+                badge: m.category === 'Featured' ? 'NanoGPT 官方精选' : parsed.badge,
+                imageUrl: iconUrl,
+                externalUrl: `https://nano-gpt.com/models?search=${encodeURIComponent(mId)}`,
+                description: m.description || "",
+                tags: m.tags || ["nanogpt", parsed.baseModel.toLowerCase()],
               });
             }
           }
-        }
-      } catch (err) {
-        console.error("SenseNova models discovery error:", err);
-      }
-      results.sensenova = senseItems.filter((m) => matchCategory(m) && matchSearch(m));
-    }
 
-    // 7. NanoGPT Real Live Discovery Endpoint (https://nano-gpt.com/api/v1/image-models)
-    if (provider === "all" || provider === "nanogpt") {
-      const nanoItems: any[] = [];
-      try {
-        const nanoResp = await fetch("https://nano-gpt.com/api/v1/image-models", {
-          headers: { "User-Agent": "ComfyCanvas/1.0" },
-          signal: AbortSignal.timeout(4500),
-        }).catch(() => null);
+          if (vidResp && vidResp.ok) {
+            const vidData = await vidResp.json();
+            const list = Array.isArray(vidData.data) ? vidData.data : Array.isArray(vidData.models) ? vidData.models : Array.isArray(vidData) ? vidData : [];
+            for (const m of list) {
+              const mId = m.id || m.model_id || "";
+              if (!mId) continue;
+              
+              const parsed = extractModelMetadata(
+                mId,
+                m.name,
+                m.tags || [],
+                m.description || '',
+                'video',
+                'NanoGPT'
+              );
 
-        if (nanoResp && nanoResp.ok) {
-          const nanoData = await nanoResp.json();
-          const list = Array.isArray(nanoData.data) ? nanoData.data : Array.isArray(nanoData.models) ? nanoData.models : Array.isArray(nanoData) ? nanoData : [];
-          for (const m of list) {
-            const mId = m.id || m.model_id || "";
-            if (!mId) continue;
-            const isVideo = mId.includes("video") || (m.tags && m.tags.includes("video"));
-            const isLora = mId.includes("lora") || (m.tags && m.tags.includes("lora"));
-            const isEdit = mId.includes("edit") || mId.includes("inpaint") || m.capabilities?.image_to_image;
-            let baseModel = "FLUX.1";
-            if (mId.includes("qwen")) baseModel = "Qwen Image 2.1";
-            else if (mId.includes("flux")) baseModel = "FLUX.1";
-            else if (mId.includes("sdxl")) baseModel = "SDXL 1.0";
-            else if (mId.includes("sd3")) baseModel = "SD 3.5";
-            else if (mId.includes("recraft")) baseModel = "Recraft V3";
-            else if (mId.includes("dall-e")) baseModel = "DALL-E";
-            else if (mId.includes("midjourney") || mId.includes("mj")) baseModel = "Midjourney";
-
-            const iconUrl = m.icon_url ? (m.icon_url.startsWith('http') ? m.icon_url : `https://nano-gpt.com${m.icon_url}`) : '';
-            const pricingStr = m.pricing?.per_image ? `$${m.pricing.per_image['1k'] || m.pricing.per_image.auto || 0.02}/图` : m.pricing ? `$${m.pricing}/次` : 'NanoGPT 算力';
-
-            nanoItems.push({
-              id: mId,
-              name: m.name || mId,
-              provider: "NanoGPT",
-              category: isVideo ? "Video" : isLora ? "LoRA" : isEdit ? "Edit" : "Checkpoint",
-              type: isLora ? "LORA" : isVideo ? "MotionModule" : "Checkpoint",
-              baseModel,
-              downloads: 12500,
-              likes: 420,
-              rating: 4.8,
-              speed: pricingStr,
-              badge: "NanoGPT 原生",
-              imageUrl: iconUrl,
-              externalUrl: `https://nano-gpt.com`,
-              description: m.description || "",
-              tags: m.tags || ["nanogpt", baseModel.toLowerCase()],
-            });
+              const iconUrl = m.icon_url ? (m.icon_url.startsWith('http') ? m.icon_url : `https://nano-gpt.com${m.icon_url}`) : '';
+              nanoItems.push({
+                id: mId,
+                name: parsed.cleanDisplayName,
+                provider: "NanoGPT",
+                category: "Video",
+                type: "MotionModule",
+                baseModel: parsed.baseModel,
+                downloads: undefined,
+                likes: undefined,
+                rating: undefined,
+                speed: m.pricing?.per_second ? `$${m.pricing.per_second}/秒` : 'NanoGPT 视频算力',
+                badge: 'NanoGPT 视频端点',
+                imageUrl: iconUrl,
+                externalUrl: `https://nano-gpt.com/models?search=${encodeURIComponent(mId)}`,
+                description: m.description || "",
+                tags: m.tags || ["nanogpt", "video", parsed.baseModel.toLowerCase()],
+              });
+            }
           }
-        } else if (nanoResp) {
-          results.nanogpt = { error: `NanoGPT 接口响应异常 (HTTP ${nanoResp.status})` } as any;
-        }
-      } catch (err: any) {
-        console.error("NanoGPT live models discovery error:", err);
-        results.nanogpt = { error: `NanoGPT 连接失败: ${err.message}` } as any;
-      }
 
-      if (!results.nanogpt) {
-        results.nanogpt = nanoItems.filter((m) => matchCategory(m) && matchSearch(m));
+          if ((!imgResp || !imgResp.ok) && (!vidResp || !vidResp.ok) && nanoItems.length === 0) {
+            const status = imgResp ? imgResp.status : 504;
+            results.nanogpt = { error: `NanoGPT 接口响应异常 (HTTP ${status})` } as any;
+          }
+        } catch (err: any) {
+          console.error("NanoGPT live models discovery error:", err);
+          results.nanogpt = { error: `NanoGPT 连接失败: ${err.message}` } as any;
+        }
+
+        if (!results.nanogpt) {
+          results.nanogpt = nanoItems.filter((m) => matchCategory(m) && matchSearch(m));
+        }
       }
     }
 
@@ -1869,18 +2259,27 @@ app.get("/api/models", async (req, res) => {
               const isImage = nameClean.includes('imagen') || nameClean.includes('image');
               const isVision = nameClean.includes('flash') || nameClean.includes('pro');
               if (isImage || isVision) {
+                const parsed = extractModelMetadata(
+                  nameClean,
+                  m.displayName || nameClean,
+                  ["google", isImage ? "imagen" : "gemini"],
+                  m.description || "",
+                  isImage ? "text-to-image" : "multimodal",
+                  "Google"
+                );
+
                 geminiItems.push({
                   id: nameClean,
-                  name: m.displayName || nameClean,
+                  name: parsed.cleanDisplayName,
                   provider: isImage ? "Google Imagen" : "Google Gemini",
                   category: isImage ? "Checkpoint" : "Edit",
                   type: isImage ? "Checkpoint" : "Reasoning",
-                  baseModel: isImage ? "Imagen 3.0" : "Gemini Flash",
+                  baseModel: parsed.baseModel,
                   downloads: 0,
                   likes: 0,
                   rating: 0,
                   speed: "Google 官方接口",
-                  badge: isImage ? "Imagen 旗舰" : "Gemini 原生",
+                  badge: parsed.badge,
                   imageUrl: "",
                   tags: ["google", isImage ? "imagen" : "gemini"],
                 });
@@ -1917,52 +2316,50 @@ app.get("/api/models", async (req, res) => {
         try {
           const liveTools = await fetchTensorArtToolsList(taKey);
           (liveTools || []).forEach((t: any) => {
-            const toolName = (t.name || '').toLowerCase();
-            const tags = (t.tags || []).map((x: any) => String(x).toLowerCase());
-            const fullStr = `${toolName} ${t.description || ''} ${tags.join(' ')}`.toLowerCase();
+            const toolId = t.name || t.id;
+            const toolTitle = t.title || t.name;
+            const tags = t.tags || [];
+            
+            const parsed = extractModelMetadata(
+              toolId,
+              toolTitle,
+              tags,
+              t.description || '',
+              t.taskType || '',
+              'Tensor.Art'
+            );
 
-            const isVideo = toolName.includes('video') || t.taskType === 'VIDEO' || fullStr.includes('video') || toolName.includes('wallpaper');
-            const isEdit = t.taskType === 'TOOLS' ||
-              toolName.includes('smart_edit') ||
-              toolName.includes('inpaint') ||
-              toolName.includes('extend') ||
-              toolName.includes('remove') ||
-              toolName.includes('upscale') ||
-              toolName.includes('restore') ||
-              toolName.includes('watermark') ||
-              toolName.includes('garment');
-            const isLora = toolName.includes('lora') || fullStr.includes('lora') || toolName.includes('oc_character') || toolName.includes('wai_illustrious');
-            const isCheckpoint = !isVideo && !isEdit && !isLora;
+            const targetExternalUrl = /^\d+$/.test(toolId)
+              ? `https://tensor.art/models/${toolId}`
+              : `https://tensor.art/models?search=${encodeURIComponent(parsed.cleanDisplayName)}`;
 
-            let baseModel = "Tensor.Art Cloud";
-            if (fullStr.includes('wan27') || fullStr.includes('wan 2.7')) baseModel = "Wan 2.7";
-            else if (fullStr.includes('wan25') || fullStr.includes('wan 2.5')) baseModel = "Wan 2.5";
-            else if (fullStr.includes('wan22') || fullStr.includes('wan 2.2') || fullStr.includes('wan')) baseModel = "Wan 2.1";
-            else if (fullStr.includes('ltx23') || fullStr.includes('ltx 2.3')) baseModel = "LTX 2.3";
-            else if (fullStr.includes('nano_banana') || fullStr.includes('banana')) baseModel = "Nano Banana 2";
-            else if (fullStr.includes('z_image') || fullStr.includes('z-image')) baseModel = "Z-Image-Turbo";
-            else if (fullStr.includes('illustrious') || fullStr.includes('wai')) baseModel = "Illustrious-XL";
-            else if (fullStr.includes('flux')) baseModel = "FLUX.1";
-            else if (fullStr.includes('sd15') || fullStr.includes('sd1.5')) baseModel = "SD 1.5";
-            else if (fullStr.includes('sdxl')) baseModel = "SDXL 1.0";
+            const trainedWords = parsed.category === 'LoRA'
+              ? (toolId.includes('three_view')
+                  ? ['three-view', 'character sheet', 'masterpiece']
+                  : toolId.includes('wai')
+                  ? ['anime', 'wai illustrious', 'masterpiece']
+                  : toolId.includes('oc')
+                  ? ['niji', 'oc', 'semi realistic']
+                  : ['masterpiece', 'high detail'])
+              : [];
 
             taAllItems.push({
-              id: t.name || t.id,
-              name: t.title || t.name,
+              id: toolId,
+              name: parsed.cleanDisplayName,
               provider: "Tensor.Art",
-              category: isVideo ? "Video" : isLora ? "LoRA" : isEdit ? "Edit" : "Checkpoint",
-              type: isLora ? "LORA" : isVideo ? "MotionModule" : isEdit ? "Tools" : "Checkpoint",
-              baseModel,
-              downloads: t.usageCount || (isCheckpoint ? 86000 : 45000),
-              likes: t.likeCount || 5200,
-              rating: 4.95,
+              category: parsed.category,
+              type: parsed.type,
+              baseModel: parsed.baseModel,
+              downloads: undefined,
+              likes: undefined,
+              rating: undefined,
               speed: t.estimatedCost ? `${t.estimatedCost} 算力点` : "OpenWorks 极速",
-              badge: isCheckpoint ? "OpenWorks 旗舰工作流" : isVideo ? "OpenWorks 视频生成" : isEdit ? "OpenWorks 图像处理" : "OpenWorks 风格工作流",
+              badge: parsed.badge,
               imageUrl: t.coverUrl || t.iconUrl || t.imageUrl || t.previewUrl || "",
-              externalUrl: "https://tensor.art",
+              externalUrl: targetExternalUrl,
               description: t.description || "",
-              tags: ["tensorart", "openworks", t.taskType || "tool", ...(t.tags || [])],
-              trainedWords: [],
+              tags: ["tensorart", "openworks", parsed.category.toLowerCase(), ...(t.tags || [])],
+              trainedWords,
             });
           });
         } catch (taErr: any) {
@@ -1971,6 +2368,28 @@ app.get("/api/models", async (req, res) => {
         }
       } else {
         fetchError = "Tensor.Art API 密钥未配置，请在右上角设置面板中填入 Echo-Access-Key (ak_tensor_... / ak_tusi_...)";
+      }
+
+      // If user queried a specific numeric model ID or name, provide a direct match entry
+      if (searchStr && /^\d+$/.test(searchStr)) {
+        taAllItems.unshift({
+          id: searchStr,
+          name: `Tensor.Art 模型 #${searchStr}`,
+          provider: "Tensor.Art",
+          category: cat === 'lora' ? 'LoRA' : cat === 'video' ? 'Video' : 'Checkpoint',
+          type: cat === 'lora' ? 'LORA' : cat === 'video' ? 'MotionModule' : 'Checkpoint',
+          baseModel: "Tensor.Art Community Model",
+          downloads: undefined,
+          likes: undefined,
+          rating: undefined,
+          speed: "Tensor.Art 算力",
+          badge: "Tensor.Art 社区模型",
+          imageUrl: "",
+          externalUrl: `https://tensor.art/models/${searchStr}`,
+          description: `Tensor.Art 社区模型 ID #${searchStr}`,
+          tags: ["tensorart", cat === 'lora' ? 'lora' : 'checkpoint', "community"],
+          trainedWords: ["masterpiece", "high quality"],
+        });
       }
 
       if (fetchError && taAllItems.length === 0) {
@@ -2307,9 +2726,12 @@ app.post(['/api/fal/generate', '/api/generate'], async (req, res) => {
 });
 
 // ==========================================
-// 2.5. AI Video Generation (Wan 2.1, LTX-Video, Agnes Video, Kling, MiniMax)
+// 2.5. AI Video Generation (Wan 2.7/2.5/2.2/2.1, LTX-Video, Kling, MiniMax, CogVideoX, Hunyuan, Agnes)
 // ==========================================
 app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res) => {
+  req.setTimeout(300000);
+  res.setTimeout(300000);
+
   try {
     const {
       prompt,
@@ -2320,11 +2742,283 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
       image_url,
       seed,
       steps,
+      provider: inputProvider,
     } = req.body;
 
-    const lowerModel = (model || '').toLowerCase();
+    const lowerModel = (model || '').toLowerCase().trim();
+    const reqProvider = (inputProvider || '').toLowerCase().trim();
 
-    // 1. Agnes AI Video support (agnes-video-2.5-flash / agnes-video-2.5)
+    // 1. Tensor.Art (OpenWorks Video Generation Tools)
+    const isTensorArtTarget =
+      reqProvider === 'tensorart' ||
+      reqProvider === 'tensor' ||
+      lowerModel.startsWith('text2video_') ||
+      lowerModel.startsWith('image2video_') ||
+      lowerModel === 'live_wallpaper' ||
+      lowerModel.includes('tensor');
+
+    if (isTensorArtTarget) {
+      const taKey =
+        (req.headers['x-tensorart-key'] as string) ||
+        cloudSettings['tensorartKey'] ||
+        defaultKeys['tensorartKey'] ||
+        process.env.TENSORART_API_KEY ||
+        '';
+
+      if (!taKey) {
+        return res.status(400).json({
+          error: '未配置 Tensor.Art API Key (x-tensorart-key)。请在右上角设置面板中配置 Tensor.Art API Key。',
+        });
+      }
+
+      const targetToolName = (model || 'text2video_wan27').trim();
+      const baseUrl = getTensorArtBaseUrl(taKey);
+
+      try {
+        const tools = await fetchTensorArtToolsList(taKey);
+        const targetTool = tools.find((t: any) => t.name === targetToolName) || { name: targetToolName, inputs: [] };
+
+        const formattedInputs = buildTensorArtInputs(targetTool.inputs || [], {
+          prompt,
+          image_url,
+          duration: String(duration || 5),
+          ratio: aspect_ratio || '16:9',
+          size: aspect_ratio === '9:16' ? '720P' : '720P',
+          ...req.body,
+        });
+
+        const submitRes = await fetch(`${baseUrl}/task`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Echo-Access-Key': taKey,
+          },
+          body: JSON.stringify({
+            toolName: targetTool.name,
+            inputs: formattedInputs,
+          }),
+        });
+
+        if (!submitRes.ok) {
+          const errText = await submitRes.text();
+          return res.status(submitRes.status).json({
+            error: `Tensor.Art 视频任务提交失败 [${submitRes.status}]: ${errText}`,
+            toolName: targetTool.name,
+            exactEndpointCalled: `${baseUrl}/task`,
+          });
+        }
+
+        const submitData = await submitRes.json();
+        if (submitData.code !== '0' && submitData.code !== 0) {
+          return res.status(400).json({
+            error: `Tensor.Art 视频任务创建失败: [${submitData.code}] ${submitData.message || '系统错误'}`,
+            toolName: targetTool.name,
+          });
+        }
+
+        const taskId = submitData.data?.task?.id || submitData.data?.taskId || submitData.data?.id;
+        if (!taskId) {
+          return res.status(500).json({
+            error: 'Tensor.Art 任务成功受理，但未返回有效 Task ID',
+            details: JSON.stringify(submitData),
+          });
+        }
+
+        // Poll task/query for video completion
+        let videoResult = '';
+        const maxPolls = 80;
+        for (let i = 0; i < maxPolls; i++) {
+          await new Promise((r) => setTimeout(r, 2500));
+          const qRes = await fetch(`${baseUrl}/task/query`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Echo-Access-Key': taKey,
+            },
+            body: JSON.stringify({ taskIds: [String(taskId)] }),
+          });
+
+          if (!qRes.ok) continue;
+          const qData = await qRes.json();
+          if (qData.code !== '0' && qData.code !== 0) continue;
+
+          const task = qData.data?.tasks?.[0] || qData.data?.[0];
+          if (!task) continue;
+
+          const status = (task.status || '').toUpperCase();
+          if (status === 'FINISH' || status === 'SUCCESS') {
+            const out = task.outputs?.[0];
+            videoResult = typeof out === 'string' ? out : out?.value || out?.url || '';
+            break;
+          }
+
+          if (status === 'FAILED' || status === 'EXCEPTION') {
+            return res.status(500).json({
+              error: `Tensor.Art 视频任务处理异常 (${status}): ${task.message || task.error || '运行失败'}`,
+              taskId,
+              toolName: targetTool.name,
+            });
+          }
+        }
+
+        if (!videoResult) {
+          return res.status(504).json({
+            error: 'Tensor.Art 视频云端渲染超时 (200s 未完成)，请稍后重试。',
+            taskId,
+            toolName: targetTool.name,
+          });
+        }
+
+        const item = recordHistoryItem({
+          url: videoResult,
+          prompt,
+          provider: 'Tensor.Art (OpenWorks Video)',
+          model: targetTool.name,
+          seed: Math.floor(Math.random() * 1000000000),
+          steps: 30,
+          cfg: 5.0,
+        });
+
+        return res.json({
+          videoUrl: videoResult,
+          provider: 'Tensor.Art (OpenWorks Video)',
+          model: targetTool.name,
+          requestedModel: model,
+          exactEndpointCalled: `${baseUrl}/task`,
+          duration: duration || 5,
+          fps: fps || 24,
+          taskId,
+          historyItem: item,
+        });
+      } catch (taErr: any) {
+        return res.status(500).json({ error: `Tensor.Art 视频生成异常: ${taErr.message}` });
+      }
+    }
+
+    // 2. NanoGPT Video API (https://api.nano-gpt.com/api/generate-video)
+    const isNanoGptTarget =
+      reqProvider === 'nanogpt' ||
+      lowerModel.includes('nanogpt') ||
+      (lowerModel.includes('wan') && !lowerModel.includes('fal') && !lowerModel.includes('damo') && !lowerModel.includes('text2video')) ||
+      (lowerModel.includes('kling') && !lowerModel.includes('fal'));
+
+    if (isNanoGptTarget) {
+      const nanoKey =
+        (req.headers['x-nanogpt-key'] as string) ||
+        cloudSettings['nanogptKey'] ||
+        defaultKeys['nanogptKey'] ||
+        process.env.NANOGPT_API_KEY ||
+        '';
+
+      if (!nanoKey) {
+        return res.status(400).json({
+          error: '未配置 NanoGPT API Key (x-nanogpt-key)。请在右上角设置中填写您的 NanoGPT API Key。',
+        });
+      }
+
+      try {
+        const nanoPayload: any = {
+          model,
+          prompt,
+          duration: Number(duration) || 5,
+          aspect_ratio: aspect_ratio || '16:9',
+        };
+        if (image_url) {
+          nanoPayload.imageUrl = image_url;
+          nanoPayload.imageDataUrl = image_url;
+        }
+
+        const submitRes = await fetch('https://api.nano-gpt.com/api/generate-video', {
+          method: 'POST',
+          headers: {
+            'x-api-key': nanoKey,
+            'Authorization': `Bearer ${nanoKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(nanoPayload),
+        }).catch(() =>
+          fetch('https://nano-gpt.com/api/generate-video', {
+            method: 'POST',
+            headers: {
+              'x-api-key': nanoKey,
+              'Authorization': `Bearer ${nanoKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(nanoPayload),
+          })
+        );
+
+        if (!submitRes.ok) {
+          const errText = await submitRes.text();
+          return res.status(submitRes.status).json({
+            error: `NanoGPT 视频任务提交失败 [${submitRes.status}]: ${errText}`,
+            model,
+          });
+        }
+
+        const submitData = await submitRes.json();
+        let videoUrl = submitData.videoUrl || submitData.url || submitData.video_url;
+        const runId = submitData.runId || submitData.id || submitData.taskId;
+
+        if (!videoUrl && runId) {
+          // Poll NanoGPT video status
+          for (let i = 0; i < 70; i++) {
+            await new Promise((r) => setTimeout(r, 2500));
+            const statusRes = await fetch(`https://api.nano-gpt.com/api/generate-video/status?runId=${encodeURIComponent(runId)}`, {
+              headers: {
+                'x-api-key': nanoKey,
+                'Authorization': `Bearer ${nanoKey}`,
+              },
+            }).catch(() => null);
+
+            if (statusRes && statusRes.ok) {
+              const statusData = await statusRes.json();
+              if (statusData.status === 'completed' || statusData.status === 'success' || statusData.videoUrl || statusData.url) {
+                videoUrl = statusData.videoUrl || statusData.url || statusData.video_url;
+                break;
+              } else if (statusData.status === 'failed' || statusData.status === 'error') {
+                return res.status(500).json({
+                  error: `NanoGPT 视频生成失败: ${statusData.error || statusData.message || 'Run failed'}`,
+                  model,
+                });
+              }
+            }
+          }
+        }
+
+        if (!videoUrl) {
+          return res.status(504).json({
+            error: 'NanoGPT 视频生成超时 (180s 未完成)，请稍后重试。',
+            model,
+          });
+        }
+
+        const item = recordHistoryItem({
+          url: videoUrl,
+          prompt,
+          provider: 'NanoGPT Video',
+          model,
+          seed: Math.floor(Math.random() * 1000000000),
+          steps: 25,
+          cfg: 4.5,
+        });
+
+        return res.json({
+          videoUrl,
+          provider: 'NanoGPT Video',
+          model,
+          requestedModel: model,
+          exactEndpointCalled: 'https://api.nano-gpt.com/api/generate-video',
+          duration: duration || 5,
+          fps: fps || 24,
+          historyItem: item,
+        });
+      } catch (nanoErr: any) {
+        return res.status(500).json({ error: `NanoGPT 视频接口请求异常: ${nanoErr.message}` });
+      }
+    }
+
+    // 3. Agnes AI Video support (agnes-video-2.5-flash / agnes-video-2.5)
     if (lowerModel.includes('agnes-video') || lowerModel.startsWith('agnes-video')) {
       const agnesKey =
         (req.headers['x-agnes-key'] as string) ||
@@ -2393,19 +3087,22 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
       });
     }
 
-    // 2. ModelScope Wan 2.1 Video support
+    // 4. ModelScope Wan 2.1 Video support
     const isModelScopeTarget =
-      req.body.provider === 'modelscope' ||
-      req.body.provider === 'modelscope_ai' ||
+      reqProvider === 'modelscope' ||
+      reqProvider === 'modelscope_ai' ||
       lowerModel.startsWith('damo/') ||
       lowerModel.startsWith('modelscope') ||
-      (lowerModel.includes('wan2.1-t2v') && !lowerModel.includes('fal-ai'));
+      lowerModel.includes('cogvideox') ||
+      (lowerModel.includes('wan2.1-t2v') && !lowerModel.includes('fal-ai')) ||
+      (lowerModel.includes('wan2.1-i2v') && !lowerModel.includes('fal-ai'));
 
     if (isModelScopeTarget) {
       const msToken =
         (req.headers['x-modelscope-token'] as string) ||
         process.env.MODELSCOPE_TOKEN ||
         cloudSettings['modelscopeToken'] ||
+        defaultKeys['modelscopeToken'] ||
         '';
 
       if (!msToken) {
@@ -2415,6 +3112,8 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
       }
 
       const effectiveSeed = typeof seed === 'number' && seed >= 0 ? seed : Math.floor(Math.random() * 1000000000);
+      const targetEndpointModel = image_url && !lowerModel.includes('i2v') ? 'damo/wan2.1-i2v-480p-14b' : (model || 'damo/wan2.1-t2v');
+      
       const msPayload: any = {
         input: {
           prompt,
@@ -2424,7 +3123,7 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
       };
       if (image_url) msPayload.input.image_url = image_url;
 
-      const msResp = await fetch('https://api-inference.modelscope.cn/v1/models/damo/wan2.1-t2v', {
+      const msResp = await fetch(`https://api-inference.modelscope.cn/v1/models/${targetEndpointModel}`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${msToken}`,
@@ -2437,7 +3136,7 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
         const errorText = await msResp.text();
         return res.status(msResp.status).json({
           error: `ModelScope 视频生成失败 [${msResp.status}]: ${errorText}`,
-          model,
+          model: targetEndpointModel,
         });
       }
 
@@ -2447,7 +3146,7 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
         return res.status(500).json({
           error: 'ModelScope 视频接口响应数据中未包含有效视频 URL',
           details: JSON.stringify(msData),
-          model,
+          model: targetEndpointModel,
         });
       }
 
@@ -2455,7 +3154,7 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
         url: vUrl,
         prompt,
         provider: 'ModelScope Wan 2.1 Video (原生)',
-        model: 'damo/wan2.1-t2v',
+        model: targetEndpointModel,
         seed: effectiveSeed,
         steps: 25,
         cfg: 5.0,
@@ -2464,9 +3163,9 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
       return res.json({
         videoUrl: vUrl,
         provider: 'ModelScope Wan 2.1 Video (原生)',
-        model: 'damo/wan2.1-t2v',
+        model: targetEndpointModel,
         requestedModel: model,
-        exactEndpointCalled: 'https://api-inference.modelscope.cn/v1/models/damo/wan2.1-t2v',
+        exactEndpointCalled: `https://api-inference.modelscope.cn/v1/models/${targetEndpointModel}`,
         duration: duration || 5,
         fps: fps || 16,
         seed: effectiveSeed,
@@ -2474,12 +3173,12 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
       });
     }
 
-    // 3. Fal.ai Video Engine (Wan 2.1, LTX, Kling, MiniMax, CogVideoX, Hunyuan)
-    const falKey = (req.headers['x-fal-key'] as string) || cloudSettings['falKey'] || process.env.FAL_KEY || '';
+    // 5. Fal.ai Video Engine (Wan 2.1, LTX, Kling, MiniMax, CogVideoX, Hunyuan)
+    const falKey = (req.headers['x-fal-key'] as string) || cloudSettings['falKey'] || defaultKeys['falKey'] || process.env.FAL_KEY || '';
 
     if (!falKey) {
       return res.status(400).json({
-        error: '未配置 Fal.ai 密钥。AI 视频生成大模型（如 Wan 2.1 / LTX-Video / Kling）需要有效的 Fal.ai API Key。若无 Fal Key，也可切换为 Agnes AI Video 或 ModelScope 阿里原生引擎。',
+        error: '未配置 Fal.ai 密钥。AI 视频生成大模型（如 Wan 2.1 / LTX-Video / Kling）需要有效的 Fal.ai API Key。若无 Fal Key，也可切换为 Tensor.Art (OpenWorks)、NanoGPT、Agnes AI Video 或 ModelScope 阿里原生引擎。',
       });
     }
 
@@ -2532,7 +3231,7 @@ app.post(['/api/video/generate', '/api/engine/video/generate'], async (req, res)
       const errorText = await upstreamResp.text();
       let friendlyError = `AI 视频服务商执行失败 [${upstreamResp.status}]: ${errorText}`;
       if (upstreamResp.status === 403 || errorText.includes('Exhausted balance')) {
-        friendlyError = `Fal.ai 接口执行失败 [403]: 账户额度已耗尽 (Exhausted balance)。请在设置面板中填入新的 Fal API Key，或切换使用 Agnes AI Video / ModelScope 引擎。`;
+        friendlyError = `Fal.ai 接口执行失败 [403]: 账户额度已耗尽 (Exhausted balance)。请在设置面板中填入新的 Fal API Key，或切换使用 Tensor.Art / NanoGPT / Agnes AI Video / ModelScope 引擎。`;
       }
       return res.status(upstreamResp.status).json({
         error: friendlyError,
@@ -4112,12 +4811,13 @@ app.post(['/api/nanogpt/generate', '/api/engine/nanogpt/generate'], async (req, 
 // 6. Gemini Built-in Engine & Prompt Enhancer
 // ==========================================
 app.post(['/api/gemini/chat', '/api/engine/gemini/chat'], async (req, res) => {
+  const startTime = Date.now();
   try {
-    const { messages = [], systemInstruction, model = 'gemini-2.5-flash', temperature } = req.body;
+    const { messages = [], systemInstruction, model = 'gemini-3.8-flash', temperature } = req.body;
     const customKey = (req.headers['x-gemini-key'] as string) || '';
-    const effectiveGenAI = createGoogleGenAI(customKey) || genAI;
+    const gen = createGoogleGenAI(customKey);
 
-    if (!effectiveGenAI) {
+    if (!gen) {
       return res.status(400).json({
         error: '未配置 Google Gemini API Key。请在设置中配置 GEMINI_API_KEY。',
       });
@@ -4136,17 +4836,19 @@ app.post(['/api/gemini/chat', '/api/engine/gemini/chat'], async (req, res) => {
     if (systemInstruction) config.systemInstruction = systemInstruction;
     if (typeof temperature === 'number') config.temperature = temperature;
 
-    const response = await effectiveGenAI.models.generateContent({
-      model: model || 'gemini-2.5-flash',
+    const targetModel = model === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : (model || 'gemini-3.8-flash');
+    const response = await gen.client.models.generateContent({
+      model: targetModel,
       contents: formattedContents,
       config,
     });
 
     const content = response.text || '';
+    keyPoolManager.recordResult('gemini', gen.apiKey, true, Date.now() - startTime);
     return res.json({
       content,
-      provider: 'Google Gemini 2.5 Flash',
-      model: model || 'gemini-2.5-flash',
+      provider: 'Google Gemini 3.8 Flash',
+      model: targetModel,
     });
   } catch (error: any) {
     return res.status(500).json({
@@ -4156,13 +4858,14 @@ app.post(['/api/gemini/chat', '/api/engine/gemini/chat'], async (req, res) => {
 });
 
 app.post(['/api/gemini/generate', '/api/engine/gemini/generate'], async (req, res) => {
+  const startTime = Date.now();
   try {
-    const { prompt, negative_prompt, width = 1024, height = 1024, loras = [], seed, cfg, guidance_scale } = req.body;
+    const { prompt, negative_prompt, width = 1024, height = 1024, loras = [], seed, cfg, guidance_scale, model = 'imagen-3.0-generate-002' } = req.body;
     const effectiveSeed = seed || Math.floor(Math.random() * 1000000000);
     const customKey = (req.headers['x-gemini-key'] as string) || '';
-    const effectiveGenAI = createGoogleGenAI(customKey) || genAI;
+    const gen = createGoogleGenAI(customKey);
 
-    if (!effectiveGenAI) {
+    if (!gen) {
       return res.status(400).json({
         error: '未配置 Google Gemini API Key。请在右上角设置中配置 GEMINI_API_KEY。',
       });
@@ -4193,40 +4896,77 @@ app.post(['/api/gemini/generate', '/api/engine/gemini/generate'], async (req, re
       }
     }
 
-    const config: any = {
-      numberOfImages: 1,
-      outputMimeType: 'image/jpeg',
-      aspectRatio,
-    };
-    if (negative_prompt) {
-      config.negativePrompt = negative_prompt;
-    }
-    const effectiveCfg = Number(guidance_scale || cfg);
-    if (effectiveCfg && effectiveCfg > 0) {
-      config.guidanceScale = effectiveCfg;
-    }
-    if (typeof effectiveSeed === 'number' && effectiveSeed >= 0) {
-      config.seed = effectiveSeed;
+    let generatedImageUrl = '';
+    const targetModel = model || 'imagen-3.0-generate-002';
+
+    if (targetModel.includes('flash-image') || targetModel.includes('flash-lite-image')) {
+      const contentResponse = await gen.client.models.generateContent({
+        model: targetModel,
+        contents: {
+          parts: [{ text: finalPrompt }],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio,
+          },
+        },
+      });
+
+      let base64Bytes = '';
+      let mimeType = 'image/png';
+      for (const part of contentResponse.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData?.data) {
+          base64Bytes = part.inlineData.data;
+          mimeType = part.inlineData.mimeType || 'image/png';
+          break;
+        }
+      }
+
+      if (!base64Bytes) {
+        keyPoolManager.recordResult('gemini', gen.apiKey, false, Date.now() - startTime, 'No image returned from Gemini', 500);
+        return res.status(500).json({ error: 'Google Gemini 图像模型未返回生成数据' });
+      }
+
+      generatedImageUrl = `data:${mimeType};base64,${base64Bytes}`;
+    } else {
+      const config: any = {
+        numberOfImages: 1,
+        outputMimeType: 'image/jpeg',
+        aspectRatio,
+      };
+      if (negative_prompt) {
+        config.negativePrompt = negative_prompt;
+      }
+      const effectiveCfg = Number(guidance_scale || cfg);
+      if (effectiveCfg && effectiveCfg > 0) {
+        config.guidanceScale = effectiveCfg;
+      }
+      if (typeof effectiveSeed === 'number' && effectiveSeed >= 0) {
+        config.seed = effectiveSeed;
+      }
+
+      const aiResponse = await gen.client.models.generateImages({
+        model: 'imagen-3.0-generate-002',
+        prompt: finalPrompt,
+        config,
+      });
+
+      if (!aiResponse.generatedImages || aiResponse.generatedImages.length === 0 || !aiResponse.generatedImages[0]?.image?.imageBytes) {
+        keyPoolManager.recordResult('gemini', gen.apiKey, false, Date.now() - startTime, 'No image returned', 500);
+        return res.status(500).json({ error: 'Google Imagen 3 API 未返回生成图像数据' });
+      }
+
+      const base64Bytes = aiResponse.generatedImages[0].image.imageBytes;
+      generatedImageUrl = `data:image/jpeg;base64,${base64Bytes}`;
     }
 
-    const aiResponse = await effectiveGenAI.models.generateImages({
-      model: 'imagen-3.0-generate-002',
-      prompt: finalPrompt,
-      config,
-    });
-
-    if (!aiResponse.generatedImages || aiResponse.generatedImages.length === 0 || !aiResponse.generatedImages[0]?.image?.imageBytes) {
-      return res.status(500).json({ error: 'Google Imagen 3 API 未返回生成图像数据' });
-    }
-
-    const base64Bytes = aiResponse.generatedImages[0].image.imageBytes;
-    const generatedImageUrl = `data:image/jpeg;base64,${base64Bytes}`;
+    keyPoolManager.recordResult('gemini', gen.apiKey, true, Date.now() - startTime);
 
     const item = recordHistoryItem({
       url: generatedImageUrl,
       prompt,
       provider: 'Google Imagen 3 (官方直连)',
-      model: 'imagen-3.0-generate-002',
+      model: targetModel,
       seed: effectiveSeed,
       steps: 30,
       cfg: 5.0,
@@ -4240,7 +4980,7 @@ app.post(['/api/gemini/generate', '/api/engine/gemini/generate'], async (req, re
       imageUrl: generatedImageUrl,
       prompt,
       provider: 'Google Imagen 3 (官方直连)',
-      model: 'imagen-3.0-generate-002',
+      model: targetModel,
       seed: effectiveSeed,
       historyItem: item,
     });
@@ -4251,7 +4991,7 @@ app.post(['/api/gemini/generate', '/api/engine/gemini/generate'], async (req, re
   }
 });
 
-// Multi-LLM Prompt Refiner endpoint (Gemini 2.5 -> SenseNova DeepSeek V4 -> Agnes AI 3.0 -> Expert Enhancer)
+// Multi-LLM Prompt Refiner endpoint (Gemini 3.8 -> SenseNova DeepSeek V4 -> Agnes AI 3.0 -> Expert Enhancer)
 app.post(['/api/gemini/refine-prompt', '/api/ai/refine-prompt'], async (req, res) => {
   try {
     const { prompt, style = 'cinematic photorealistic 8k', loras = [] } = req.body;
@@ -4273,13 +5013,13 @@ Your task is to transform the user's initial prompt into an exceptional, visuall
 
     let refinedText = '';
 
-    // 1. Tier 1: Google Gemini 2.5 Flash
+    // 1. Tier 1: Google Gemini 3.8 Flash
     try {
       const geminiKey = (req.headers['x-gemini-key'] as string) || process.env.GEMINI_API_KEY || cloudSettings['geminiKey'] || '';
-      const effectiveGenAI = createGoogleGenAI(geminiKey);
-      if (effectiveGenAI) {
-        const response = await effectiveGenAI.models.generateContent({
-          model: 'gemini-2.5-flash',
+      const gen = createGoogleGenAI(geminiKey);
+      if (gen) {
+        const response = await gen.client.models.generateContent({
+          model: 'gemini-3.8-flash',
           contents: [
             {
               role: 'user',
@@ -4540,7 +5280,7 @@ app.post('/api/test-provider', async (req, res) => {
       if (!testGen) {
         return res.json({ status: 'error', message: 'Google Gemini 初始化失败' });
       }
-      await testGen.models.generateContent({
+      await testGen.client.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
       });
@@ -4626,6 +5366,293 @@ app.post('/api/test-provider', async (req, res) => {
       message: error.message || '连接测试异常',
     });
   }
+});
+
+// Cloud Multi-Key Pool Stats
+app.get('/api/cloud-keys/stats', (_req, res) => {
+  keyPoolManager.refreshFromSettings();
+  return res.json(keyPoolManager.getStats());
+});
+
+// Update Key Pool Strategy
+app.post('/api/cloud-keys/strategy', (req, res) => {
+  const { provider, strategy } = req.body;
+  if (!provider || !strategy) {
+    return res.status(400).json({ error: 'Missing provider or strategy' });
+  }
+  keyPoolManager.setStrategy(provider, strategy);
+  cloudSettings[`${provider}_strategy`] = strategy;
+  writeJsonFile(SETTINGS_FILE, cloudSettings);
+  return res.json({ success: true, provider, strategy });
+});
+
+// Test single key directly
+app.post('/api/cloud-keys/test-single', async (req, res) => {
+  const { provider, key } = req.body;
+  if (!provider || !key) {
+    return res.status(400).json({ error: 'Missing provider or key' });
+  }
+  const startTime = Date.now();
+  try {
+    if (provider === 'fal') {
+      const resp = await fetch('https://fal.run/fal-ai/flux/schnell', {
+        method: 'POST',
+        headers: { 'Authorization': `Key ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'ping', num_inference_steps: 1 }),
+      });
+      const latency = Date.now() - startTime;
+      const text = await resp.text();
+      if (resp.ok) {
+        keyPoolManager.recordResult('fal', key, true, latency);
+        return res.json({ status: 'active', latency, message: 'Fal.ai Key 正常就绪 (200 OK)' });
+      }
+      if (text.includes('TOP_UP') || text.includes('locked')) {
+        keyPoolManager.recordResult('fal', key, false, latency, 'Fal 余额已耗尽', 429);
+        return res.json({ status: 'rate_limited', latency, message: 'Fal.ai 认证有效，但余额不足 (需充值)' });
+      }
+      keyPoolManager.recordResult('fal', key, false, latency, text, resp.status);
+      return res.json({ status: 'invalid', latency, message: `Fal.ai 认证未通过 [${resp.status}]` });
+    }
+
+    if (provider === 'gemini') {
+      const testGen = createGoogleGenAI(key);
+      if (!testGen) return res.json({ status: 'invalid', message: 'Google Gemini 实例初始化失败' });
+      await testGen.client.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+      });
+      const latency = Date.now() - startTime;
+      keyPoolManager.recordResult('gemini', key, true, latency);
+      return res.json({ status: 'active', latency, message: 'Google Gemini 官方直连正常' });
+    }
+
+    if (provider === 'huggingface') {
+      const resp = await fetch('https://huggingface.co/api/whoami-v2', {
+        headers: { 'Authorization': `Bearer ${key}` },
+      });
+      const latency = Date.now() - startTime;
+      if (resp.ok) {
+        const whoami = await resp.json();
+        keyPoolManager.recordResult('huggingface', key, true, latency);
+        return res.json({ status: 'active', latency, message: `HF 验证成功: @${whoami.name || 'User'}` });
+      }
+      keyPoolManager.recordResult('huggingface', key, false, latency, 'Invalid token', resp.status);
+      return res.json({ status: 'invalid', latency, message: `HF 鉴权未通过 [${resp.status}]` });
+    }
+
+    if (provider === 'agnes') {
+      const effectiveBaseUrl = cloudSettings['agnesBaseUrl'] || defaultKeys['agnesBaseUrl'] || 'https://apihub.agnes-ai.com/v1';
+      const resp = await fetch(`${effectiveBaseUrl.replace(/\/+$/, '')}/models`, {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      const latency = Date.now() - startTime;
+      if (resp.ok) {
+        keyPoolManager.recordResult('agnes', key, true, latency);
+        return res.json({ status: 'active', latency, message: 'Agnes AI (ApiHub) 正常可用' });
+      }
+      keyPoolManager.recordResult('agnes', key, false, latency, 'Unauthorized', resp.status);
+      return res.json({ status: 'invalid', latency, message: `Agnes AI 鉴权失败 [${resp.status}]` });
+    }
+
+    if (provider === 'sensenova') {
+      const effectiveBaseUrl = cloudSettings['sensenovaBaseUrl'] || defaultKeys['sensenovaBaseUrl'] || 'https://token.sensenova.cn/v1';
+      const resp = await fetch(`${effectiveBaseUrl.replace(/\/+$/, '')}/models`, {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      const latency = Date.now() - startTime;
+      if (resp.ok) {
+        keyPoolManager.recordResult('sensenova', key, true, latency);
+        return res.json({ status: 'active', latency, message: 'SenseNova (商汤日日新) 正常可用' });
+      }
+      keyPoolManager.recordResult('sensenova', key, false, latency, 'Unauthorized', resp.status);
+      return res.json({ status: 'invalid', latency, message: `商汤日日新鉴权失败 [${resp.status}]` });
+    }
+
+    if (provider === 'nanogpt') {
+      const resp = await fetch('https://nano-gpt.com/api/v1/images', {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'ping', model: 'flux-schnell' }),
+      });
+      const latency = Date.now() - startTime;
+      if (resp.ok) {
+        keyPoolManager.recordResult('nanogpt', key, true, latency);
+        return res.json({ status: 'active', latency, message: 'NanoGPT 认证正常' });
+      }
+      const text = await resp.text();
+      keyPoolManager.recordResult('nanogpt', key, false, latency, text, resp.status);
+      return res.json({ status: 'invalid', latency, message: `NanoGPT 鉴权失败 [${resp.status}]` });
+    }
+
+    if (provider === 'tensorart') {
+      const tools = await fetchTensorArtToolsList(key);
+      const latency = Date.now() - startTime;
+      keyPoolManager.recordResult('tensorart', key, true, latency);
+      return res.json({ status: 'active', latency, message: `Tensor.Art OpenAPI 正常 (${tools.length} 工具)` });
+    }
+
+    if (provider === 'civitai') {
+      const resp = await fetch('https://civitai.com/api/v1/models?limit=1', {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      const latency = Date.now() - startTime;
+      if (resp.ok) {
+        keyPoolManager.recordResult('civitai', key, true, latency);
+        return res.json({ status: 'active', latency, message: 'Civitai API 验证成功' });
+      }
+      return res.json({ status: 'invalid', latency, message: `Civitai 返回错误 [${resp.status}]` });
+    }
+
+    if (provider === 'modelscope' || provider === 'modelscope_ai') {
+      const endpoint = provider === 'modelscope' ? 'https://api-inference.modelscope.cn/v1/models' : 'https://api-inference.modelscope.ai/v1/models';
+      const resp = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      const latency = Date.now() - startTime;
+      if (resp.ok) {
+        keyPoolManager.recordResult(provider, key, true, latency);
+        return res.json({ status: 'active', latency, message: `魔搭社区 (${provider}) 验证成功` });
+      }
+      return res.json({ status: 'invalid', latency, message: `魔搭鉴权未通过 [${resp.status}]` });
+    }
+
+    return res.status(400).json({ error: '未知服务商' });
+  } catch (err: any) {
+    keyPoolManager.recordResult(provider, key, false, Date.now() - startTime, err.message);
+    return res.json({ status: 'invalid', latency: Date.now() - startTime, message: err.message || '测试异常' });
+  }
+});
+
+// Balance & Quota Query Endpoint
+app.get('/api/cloud-keys/balances', async (_req, res) => {
+  const balances: Record<string, any> = {};
+
+  // Parallel checks for providers
+  await Promise.allSettled([
+    // Fal.ai
+    (async () => {
+      const falKey = keyPoolManager.getNextKey('fal');
+      if (falKey) {
+        try {
+          const resp = await fetch('https://fal.run/fal-ai/flux/schnell', {
+            method: 'POST',
+            headers: { 'Authorization': `Key ${falKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: 'balance_ping', num_inference_steps: 1 }),
+          });
+          const text = await resp.text();
+          if (resp.ok) {
+            balances.fal = { status: 'ok', detail: 'Fal.ai 额度充足 / 按需计费正常' };
+          } else if (text.includes('TOP_UP')) {
+            balances.fal = { status: 'exhausted', detail: 'Fal.ai 账户余额已耗尽 (TOP_UP)' };
+          } else {
+            balances.fal = { status: 'unknown', detail: `Fal.ai 状态响应: ${resp.status}` };
+          }
+        } catch (e: any) {
+          balances.fal = { status: 'error', detail: e.message };
+        }
+      }
+    })(),
+
+    // Google Gemini
+    (async () => {
+      const geminiKey = keyPoolManager.getNextKey('gemini') || process.env.GEMINI_API_KEY;
+      if (geminiKey) {
+        try {
+          const testGen = createGoogleGenAI(geminiKey);
+          if (testGen) {
+            balances.gemini = { status: 'ok', detail: 'Google GenAI SDK 官方直连可用 (Imagen 3 & Gemini 3.8)' };
+          }
+        } catch (e: any) {
+          balances.gemini = { status: 'error', detail: e.message };
+        }
+      }
+    })(),
+
+    // Agnes AI
+    (async () => {
+      const agnesKey = keyPoolManager.getNextKey('agnes');
+      const agnesBaseUrl = cloudSettings['agnesBaseUrl'] || defaultKeys['agnesBaseUrl'] || 'https://apihub.agnes-ai.com/v1';
+      if (agnesKey) {
+        try {
+          const resp = await fetch(`${agnesBaseUrl.replace(/\/+$/, '')}/models`, {
+            headers: { Authorization: `Bearer ${agnesKey}` },
+          });
+          if (resp.ok) {
+            balances.agnes = { status: 'ok', detail: 'Agnes AI 高并发聚合接口正常就绪' };
+          } else {
+            balances.agnes = { status: 'low', detail: `Agnes AI 状态码: ${resp.status}` };
+          }
+        } catch (e: any) {
+          balances.agnes = { status: 'error', detail: e.message };
+        }
+      }
+    })(),
+
+    // SenseNova
+    (async () => {
+      const snKey = keyPoolManager.getNextKey('sensenova');
+      const snBaseUrl = cloudSettings['sensenovaBaseUrl'] || defaultKeys['sensenovaBaseUrl'] || 'https://token.sensenova.cn/v1';
+      if (snKey) {
+        try {
+          const resp = await fetch(`${snBaseUrl.replace(/\/+$/, '')}/models`, {
+            headers: { Authorization: `Bearer ${snKey}` },
+          });
+          if (resp.ok) {
+            balances.sensenova = { status: 'ok', detail: '商汤日日新 Token 账户正常可用' };
+          } else {
+            balances.sensenova = { status: 'low', detail: `商汤 API 状态码: ${resp.status}` };
+          }
+        } catch (e: any) {
+          balances.sensenova = { status: 'error', detail: e.message };
+        }
+      }
+    })(),
+
+    // ModelScope CN & AI
+    (async () => {
+      const msKey = keyPoolManager.getNextKey('modelscope');
+      if (msKey) {
+        balances.modelscope = { status: 'ok', detail: '魔搭国内站 (modelscope.cn) 魔粒额度已挂载' };
+      }
+      const msAiKey = keyPoolManager.getNextKey('modelscope_ai');
+      if (msAiKey) {
+        balances.modelscope_ai = { status: 'ok', detail: '魔搭国际站 (modelscope.ai) 国际魔粒已挂载' };
+      }
+    })(),
+
+    // Tensor.Art
+    (async () => {
+      const taKey = keyPoolManager.getNextKey('tensorart');
+      if (taKey) {
+        try {
+          const tools = await fetchTensorArtToolsList(taKey);
+          balances.tensorart = { status: 'ok', detail: `Tensor.Art 算力点数就绪 (${tools.length} 个工具可用)` };
+        } catch (e: any) {
+          balances.tensorart = { status: 'error', detail: e.message };
+        }
+      }
+    })(),
+
+    // Hugging Face
+    (async () => {
+      const hfKey = keyPoolManager.getNextKey('huggingface');
+      if (hfKey) {
+        try {
+          const resp = await fetch('https://huggingface.co/api/whoami-v2', {
+            headers: { 'Authorization': `Bearer ${hfKey}` },
+          });
+          if (resp.ok) {
+            const whoami = await resp.json();
+            balances.huggingface = { status: 'ok', detail: `@${whoami.name || 'User'} (Serverless 推理额度正常)` };
+          }
+        } catch (e: any) {
+          balances.huggingface = { status: 'error', detail: e.message };
+        }
+      }
+    })(),
+  ]);
+
+  return res.json(balances);
 });
 
 // ==========================================

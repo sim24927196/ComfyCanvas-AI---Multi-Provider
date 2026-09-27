@@ -1212,7 +1212,31 @@ export default function App() {
     const lowerProv = (providerHint || '').toLowerCase();
     const lowerId = (modelId || '').toLowerCase();
 
-    if (lowerProv.includes('tensor') || lowerId.includes('tensor') || lowerId.includes('oc_character') || lowerId.includes('wan27') || lowerId.includes('openworks')) {
+    const isTaTool = [
+      'strong_text2image', 'photoreal_studio', 'anime_lab', 'oc_character',
+      'text2video_wan', 'text2video_ltx', 'image2video_wan', 'image2video_ltx',
+      'smart_edit', 'image_upscaler', 'background_remover', 'extend_image_sd15',
+      'live_wallpaper', 'old_photo_restore', 'three_view_flux_kontext', 'watermark_remove',
+      'oc_garment'
+    ].some((prefix) => lowerId.includes(prefix));
+
+    const isVideoModel =
+      extraData?.category === 'Video' ||
+      extraData?.type === 'MotionModule' ||
+      modelHubCategory === 'video' ||
+      lowerId.includes('video') ||
+      lowerId.includes('wan2.1-t2v') ||
+      lowerId.includes('wan2.2-t2v') ||
+      lowerId.startsWith('text2video_') ||
+      lowerId.startsWith('image2video_') ||
+      lowerId === 'live_wallpaper' ||
+      lowerId.includes('kling') ||
+      lowerId.includes('ltx') ||
+      lowerId.includes('minimax') ||
+      lowerId.includes('cogvideo') ||
+      lowerId.includes('hunyuan-video');
+
+    if (lowerProv.includes('tensor') || lowerId.includes('tensor') || isTaTool || /^\d{10,25}$/.test(lowerId)) {
       provider = 'tensorart';
     } else if (lowerProv.includes('agnes') || lowerId.includes('agnes')) {
       provider = 'agnes';
@@ -1230,49 +1254,146 @@ export default function App() {
       provider = 'nanogpt';
     } else if (lowerProv.includes('gemini') || lowerProv.includes('imagen') || lowerId.includes('imagen')) {
       provider = 'gemini';
-    } else if (lowerProv.includes('video') || lowerId.includes('video') || lowerId.includes('wan2.1-t2v') || lowerId.includes('ltx')) {
-      provider = 'video';
+    } else if (lowerProv.includes('video') || isVideoModel) {
+      provider = lowerProv.includes('tensor') ? 'tensorart' : lowerProv.includes('modelscope') ? 'modelscope' : 'fal';
     } else if (lowerProv.includes('fal')) {
       provider = 'fal';
     }
 
-    // If a spatial frame is selected, update its checkpoint model and provider
-    if (selectedFrameId) {
-      const frame = spatialFrames.find((f) => f.id === selectedFrameId);
-      if (frame) {
-        handleUpdateFrame(selectedFrameId, {
-          params: {
-            ...frame.params,
-            checkpoint: modelId,
-            targetProvider: provider,
-            tensorArtInputs: provider === 'tensorart' ? (extraData?.inputs || []) : undefined,
-          },
-        });
+    if (isVideoModel) {
+      // 1. Update active spatial frame for video
+      if (selectedFrameId) {
+        const frame = spatialFrames.find((f) => f.id === selectedFrameId);
+        if (frame) {
+          handleUpdateFrame(selectedFrameId, {
+            mediaType: 'video',
+            params: {
+              ...frame.params,
+              checkpoint: modelId,
+              targetProvider: provider,
+              tensorArtInputs: provider === 'tensorart' ? (extraData?.inputs || []) : undefined,
+            },
+          });
+        }
       }
-    }
 
-    // Also update any CheckpointLoader nodes in the graph
-    setNodes((prev) =>
-      prev.map((n) =>
-        n.type === 'CheckpointLoaderSimple'
-          ? {
-              ...n,
-              values: {
-                ...n.values,
-                ckpt_name: modelId,
-                targetProvider: provider,
-                tensorArtInputs: provider === 'tensorart' ? (extraData?.inputs || []) : undefined,
-              },
+      // 2. Update existing AIVideoNode or create new one if not exists
+      const existingVideoNode = nodes.find((n) => n.type === 'AIVideoNode' && !n.bypassed);
+      if (existingVideoNode) {
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.type === 'AIVideoNode') {
+              return {
+                ...n,
+                title: `AI 视频 (${modelName.split('/').pop()})`,
+                values: {
+                  ...n.values,
+                  model: modelId,
+                  targetProvider: provider,
+                },
+              };
             }
-          : n
-      )
-    );
+            return n;
+          })
+        );
+      } else {
+        const newNodeId = `node-video-${Date.now()}`;
+        const def = NODE_DEFINITIONS['AIVideoNode'];
+        const newNode: NodeInstance = {
+          id: newNodeId,
+          type: 'AIVideoNode',
+          title: `AI 视频 (${modelName.split('/').pop()})`,
+          pos: {
+            x: Math.round(-transform.x / transform.scale + 120),
+            y: Math.round(-transform.y / transform.scale + 160),
+          },
+          width: 320,
+          inputs: def ? def.inputs : [{ id: 'positive', name: 'positive', type: 'CONDITIONING', label: 'prompt' }],
+          outputs: def ? def.outputs : [{ id: 'VIDEO', name: 'VIDEO', type: 'VIDEO', label: 'VIDEO' }],
+          values: {
+            model: modelId,
+            targetProvider: provider,
+            prompt: 'Cinematic dynamic scene, high quality, 4k ultra-detailed, photorealistic motion',
+            aspect_ratio: '16:9',
+            duration: 5,
+            fps: 16,
+            steps: 30,
+            cfg: 5.0,
+          },
+          state: 'idle',
+        };
+        setNodes((prev) => [...prev, newNode]);
+        setSelectedNodeId(newNodeId);
+      }
 
-    setToast({
-      type: 'success',
-      title: '🎯 已成功应用底模',
-      message: `已切换至【${modelName}】(引擎服务商: ${provider.toUpperCase()})，已同步至画布与取景框`,
-    });
+      setToast({
+        type: 'success',
+        title: '🎬 已成功应用 AI 视频大模型',
+        message: `已切换至【${modelName}】(服务商: ${provider.toUpperCase()})，已同步至画布与活跃选区`,
+      });
+    } else {
+      // Base Model (Checkpoint)
+      if (selectedFrameId) {
+        const frame = spatialFrames.find((f) => f.id === selectedFrameId);
+        if (frame) {
+          handleUpdateFrame(selectedFrameId, {
+            mediaType: 'image',
+            params: {
+              ...frame.params,
+              checkpoint: modelId,
+              targetProvider: provider,
+              tensorArtInputs: provider === 'tensorart' ? (extraData?.inputs || []) : undefined,
+            },
+          });
+        }
+      }
+
+      const existingCkptNode = nodes.find((n) => n.type === 'CheckpointLoaderSimple' && !n.bypassed);
+      if (existingCkptNode) {
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.type === 'CheckpointLoaderSimple') {
+              return {
+                ...n,
+                title: `加载底模 (${provider.toUpperCase()})`,
+                values: {
+                  ...n.values,
+                  ckpt_name: modelId,
+                  targetProvider: provider,
+                  tensorArtInputs: provider === 'tensorart' ? (extraData?.inputs || []) : undefined,
+                },
+              };
+            }
+            return n;
+          })
+        );
+      } else {
+        const newNodeId = `node-ckpt-${Date.now()}`;
+        const def = NODE_DEFINITIONS['CheckpointLoaderSimple'];
+        const newNode: NodeInstance = {
+          id: newNodeId,
+          type: 'CheckpointLoaderSimple',
+          title: `加载底模 (${provider.toUpperCase()})`,
+          pos: {
+            x: Math.round(-transform.x / transform.scale + 120),
+            y: Math.round(-transform.y / transform.scale + 160),
+          },
+          width: 290,
+          inputs: [],
+          outputs: def ? def.outputs : [],
+          values: { ckpt_name: modelId, targetProvider: provider },
+          state: 'idle',
+        };
+        setNodes((prev) => [...prev, newNode]);
+        setSelectedNodeId(newNodeId);
+      }
+
+      setToast({
+        type: 'success',
+        title: '🎯 已成功应用图像底模 (Checkpoint)',
+        message: `已切换至【${modelName}】(服务商: ${provider.toUpperCase()})，已同步至画布与前置加载器`,
+      });
+    }
   };
 
   // Canvas Board Operations
@@ -1574,8 +1695,24 @@ export default function App() {
     activeFrame?.negativePrompt ??
     '';
 
+  const graphLoras = nodes
+    .filter((n) => (n.type === 'LoRALoader' || n.type === 'LoraLoader' || n.type === 'LoraLoaderModelOnly') && !n.bypassed)
+    .map((n) => ({
+      name: n.values?.lora_name || 'LoRA',
+      modelStrength: Number(n.values?.strength_model ?? 0.8),
+      clipStrength: Number(n.values?.strength_clip ?? 0.8),
+      triggerWords: n.values?.trigger_words || '',
+      civitaiId: n.values?.civitai_id || '',
+    }));
+
+  const detectedTargetProvider =
+    checkpointNode?.values?.targetProvider ||
+    (googleImagenNode ? 'gemini' : undefined) ||
+    activeFrame?.params?.targetProvider ||
+    'huggingface';
+
   const activeParams: ComfyParameters = {
-    checkpoint: checkpointNode?.values?.ckpt_name || activeFrame?.params?.checkpoint || '',
+    checkpoint: checkpointNode?.values?.ckpt_name || googleImagenNode?.values?.model || activeFrame?.params?.checkpoint || 'Tongyi-MAI/Z-Image-Turbo',
     seed: ksamplerNode?.values?.seed !== undefined ? Number(ksamplerNode.values.seed) : (activeFrame?.params?.seed ?? 42),
     seedControl: (ksamplerNode?.values?.control_after_generate as any) || activeFrame?.params?.seedControl || 'randomize',
     steps: ksamplerNode?.values?.steps !== undefined ? Number(ksamplerNode.values.steps) : (activeFrame?.params?.steps ?? 25),
@@ -1586,8 +1723,8 @@ export default function App() {
     width: latentNode?.values?.width !== undefined ? Number(latentNode.values.width) : (activeFrame?.params?.width ?? 1024),
     height: latentNode?.values?.height !== undefined ? Number(latentNode.values.height) : (activeFrame?.params?.height ?? 1024),
     batchSize: latentNode?.values?.batch_size !== undefined ? Number(latentNode.values.batch_size) : (activeFrame?.params?.batchSize ?? 1),
-    loras: activeFrame?.params?.loras || [],
-    targetProvider: activeFrame?.params?.targetProvider || 'fal',
+    loras: (selectedFrameId ? activeFrame?.params?.loras : null) || (graphLoras.length > 0 ? graphLoras : (activeFrame?.params?.loras || [])),
+    targetProvider: detectedTargetProvider as any,
   };
 
   return (
@@ -1699,6 +1836,10 @@ export default function App() {
             }}
             currentCheckpoint={currentCheckpoint}
             onAutoFixCheckpoint={handleAutoFixCheckpoint}
+            onOpenModelHub={(cat) => {
+              setModelHubCategory(cat || 'all');
+              setIsModelHubOpen(true);
+            }}
           />
         );
       })()}
@@ -1801,9 +1942,23 @@ export default function App() {
                         sampler_name: newParams.sampler,
                         scheduler: newParams.scheduler,
                         seed: newParams.seed,
+                        control_after_generate: newParams.seedControl || n.values.control_after_generate,
                         denoise: newParams.denoise,
                       },
                     };
+                  }
+                  if (n.type === 'LoRALoader') {
+                    const matchingLora = (newParams.loras || []).find((l) => l.name === n.values?.lora_name);
+                    if (matchingLora) {
+                      return {
+                        ...n,
+                        values: {
+                          ...n.values,
+                          strength_model: matchingLora.modelStrength,
+                          strength_clip: matchingLora.clipStrength,
+                        },
+                      };
+                    }
                   }
                   if (n.type === 'CheckpointLoaderSimple') {
                     return {
@@ -1890,47 +2045,105 @@ export default function App() {
           'fal-ai/flux/schnell'
         }
         onSelectModel={handleSelectModelFromHub}
-        onAddModelNode={(mId, mName, prov) => {
+        onAddModelNode={(mId, mName, prov, extraData) => {
           let detectedProvider = prov;
-          if (!detectedProvider) {
-            if (mId.includes('tensor') || /^\d{10,25}$/.test(mId)) {
+          const lowerId = mId.toLowerCase();
+          const lowerProv = (prov || '').toLowerCase();
+          const isTa = [
+            'strong_text2image', 'photoreal_studio', 'anime_lab', 'oc_character',
+            'text2video_wan', 'text2video_ltx', 'image2video_wan', 'image2video_ltx',
+            'smart_edit', 'image_upscaler', 'background_remover', 'extend_image_sd15',
+            'live_wallpaper', 'old_photo_restore', 'three_view_flux_kontext', 'watermark_remove',
+            'oc_garment'
+          ].some((prefix) => lowerId.includes(prefix));
+
+          if (!detectedProvider || detectedProvider === 'Cloud API') {
+            if (lowerProv.includes('tensor') || lowerId.includes('tensor') || /^\d{10,25}$/.test(mId) || isTa) {
               detectedProvider = 'tensorart';
-            } else if (mId.includes('civitai') || mId.includes('krea2') || mId.startsWith('urn:air:')) {
+            } else if (lowerProv.includes('civitai') || lowerId.includes('civitai') || lowerId.includes('krea2') || lowerId.startsWith('urn:air:')) {
               detectedProvider = 'civitai';
-            } else if (mId.includes('agnes')) {
+            } else if (lowerProv.includes('agnes') || lowerId.includes('agnes')) {
               detectedProvider = 'agnes';
-            } else if (mId.includes('damo/') || mId.includes('wan2.1') || mId.includes('qwen')) {
+            } else if (lowerProv.includes('modelscope') || lowerId.includes('damo/') || lowerId.includes('wan2.1') || lowerId.includes('qwen')) {
               detectedProvider = 'modelscope';
-            } else if (mId.includes('deepseek') || mId.includes('sensenova') || mId.includes('glm')) {
+            } else if (lowerProv.includes('sensenova') || lowerId.includes('deepseek') || lowerId.includes('sensenova') || lowerId.includes('glm')) {
               detectedProvider = 'sensenova';
-            } else if (mId.includes('imagen') || mId.includes('gemini')) {
+            } else if (lowerProv.includes('gemini') || lowerId.includes('imagen') || lowerId.includes('gemini')) {
               detectedProvider = 'gemini';
-            } else if (mId.includes('black-forest-labs') || mId.includes('stabilityai') || mId.includes('runwayml')) {
+            } else if (lowerProv.includes('hugging') || lowerId.includes('black-forest-labs') || lowerId.includes('stabilityai') || lowerId.includes('runwayml')) {
               detectedProvider = 'huggingface';
-            } else if (mId.includes('flux-schnell') || mId.includes('sdxl-turbo')) {
+            } else if (lowerProv.includes('nanogpt') || lowerId.includes('flux-schnell') || lowerId.includes('sdxl-turbo')) {
               detectedProvider = 'nanogpt';
+            } else if (lowerProv.includes('fal') || lowerId.includes('fal-ai')) {
+              detectedProvider = 'fal';
             } else {
               detectedProvider = 'civitai';
             }
           }
-          const newNodeId = `node-ckpt-${Date.now()}`;
-          const def = NODE_DEFINITIONS['CheckpointLoaderSimple'];
-          const newNode: NodeInstance = {
-            id: newNodeId,
-            type: 'CheckpointLoaderSimple',
-            title: `Load Checkpoint (${mName.split('/').pop()})`,
-            pos: {
-              x: Math.round(-transform.x / transform.scale + 120),
-              y: Math.round(-transform.y / transform.scale + 160),
-            },
-            width: 290,
-            inputs: [],
-            outputs: def.outputs,
-            values: { ckpt_name: mId, targetProvider: detectedProvider },
-            state: 'idle',
-          };
-          setNodes((prev) => [...prev, newNode]);
-          setSelectedNodeId(newNodeId);
+
+          const isVideoModel =
+            extraData?.category === 'Video' ||
+            extraData?.type === 'MotionModule' ||
+            modelHubCategory === 'video' ||
+            lowerId.includes('video') ||
+            lowerId.includes('wan2.1-t2v') ||
+            lowerId.includes('wan2') ||
+            lowerId.includes('text2video') ||
+            lowerId.includes('image2video') ||
+            lowerId.includes('ltx-video') ||
+            lowerId.includes('kling') ||
+            lowerId.includes('cogvideox') ||
+            lowerId.includes('minimax') ||
+            lowerId.includes('hunyuanvideo');
+
+          if (isVideoModel) {
+            const newNodeId = `node-video-${Date.now()}`;
+            const def = NODE_DEFINITIONS['AIVideoNode'];
+            const newNode: NodeInstance = {
+              id: newNodeId,
+              type: 'AIVideoNode',
+              title: `AI Video (${mName.split('/').pop()})`,
+              pos: {
+                x: Math.round(-transform.x / transform.scale + 120),
+                y: Math.round(-transform.y / transform.scale + 160),
+              },
+              width: 320,
+              inputs: def ? def.inputs : [{ id: 'prompt', name: 'prompt', label: 'Prompt', type: 'STRING' }],
+              outputs: def ? def.outputs : [{ id: 'video', name: 'video', label: 'VIDEO', type: 'VIDEO' }],
+              values: {
+                model: mId,
+                targetProvider: detectedProvider,
+                prompt: 'Cinematic dynamic scene, high quality, 4k ultra-detailed, photorealistic motion',
+                aspect_ratio: '16:9',
+                duration: 5,
+                fps: 24,
+                steps: 30,
+                cfg: 6.0,
+              },
+              state: 'idle',
+            };
+            setNodes((prev) => [...prev, newNode]);
+            setSelectedNodeId(newNodeId);
+          } else {
+            const newNodeId = `node-ckpt-${Date.now()}`;
+            const def = NODE_DEFINITIONS['CheckpointLoaderSimple'];
+            const newNode: NodeInstance = {
+              id: newNodeId,
+              type: 'CheckpointLoaderSimple',
+              title: `Load Checkpoint (${mName.split('/').pop()})`,
+              pos: {
+                x: Math.round(-transform.x / transform.scale + 120),
+                y: Math.round(-transform.y / transform.scale + 160),
+              },
+              width: 290,
+              inputs: [],
+              outputs: def ? def.outputs : [],
+              values: { ckpt_name: mId, targetProvider: detectedProvider },
+              state: 'idle',
+            };
+            setNodes((prev) => [...prev, newNode]);
+            setSelectedNodeId(newNodeId);
+          }
         }}
         onAddLora={(lora) => {
           if (selectedFrameId) {

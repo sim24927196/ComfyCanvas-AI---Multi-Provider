@@ -36,6 +36,9 @@ export class TensorArtDriver extends BaseEngineDriver {
         seed: params.seed,
         loras: params.loras,
         image_url: params.image_url,
+        duration: params.videoDuration || 5,
+        ratio: params.aspectRatio || '16:9',
+        size: params.width && params.width >= 1080 ? '1080P' : '720P',
       }),
     });
 

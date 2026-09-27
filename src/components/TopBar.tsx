@@ -12,6 +12,7 @@ import {
   Settings,
   LayoutGrid,
   BookOpen,
+  Video,
 } from 'lucide-react';
 import { CanvasMode } from '../types/graph';
 
@@ -136,10 +137,21 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             onClick={onOpenBaseModelHub}
             className="px-2.5 py-1 rounded-lg text-xs font-semibold text-cyan-300 hover:bg-cyan-500/10 flex items-center gap-1.5 transition-colors border border-cyan-500/20"
-            title="基础底模中心：FLUX.1、SDXL 1.0、SD 3.5、Imagen 3 等底模检索与应用"
+            title="基础底模 (Checkpoints)：FLUX.1、SDXL 1.0、SD 3.5、Agnes、Animagine XL 等图像基底模型检索与应用"
           >
             <Cpu className="w-3.5 h-3.5 text-cyan-400" />
             <span>底模中心</span>
+          </button>
+        )}
+
+        {onOpenVideoHub && (
+          <button
+            onClick={onOpenVideoHub}
+            className="px-2.5 py-1 rounded-lg text-xs font-semibold text-emerald-300 hover:bg-emerald-500/10 flex items-center gap-1.5 transition-colors border border-emerald-500/20"
+            title="AI 视频大模型：阿里 Wan 2.1、LTX-Video、快手可灵 1.5、CogVideoX、MiniMax 等文生/图生视频"
+          >
+            <Video className="w-3.5 h-3.5 text-emerald-400" />
+            <span>AI 视频</span>
           </button>
         )}
 
@@ -147,21 +159,10 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             onClick={onOpenLoRAHub}
             className="px-2.5 py-1 rounded-lg text-xs font-semibold text-purple-300 hover:bg-purple-500/10 flex items-center gap-1.5 transition-colors border border-purple-500/20"
-            title="微调 LoRA 枢纽中心：Civitai / Hugging Face / ModelScope 全生态 LoRA 检索与配对"
+            title="微调 LoRA 枢纽：Civitai / Hugging Face / ModelScope / Tensor.Art 风格与角色微调权重"
           >
             <Layers className="w-3.5 h-3.5 text-purple-400" />
             <span>LoRA 枢纽</span>
-          </button>
-        )}
-
-        {onOpenVideoHub && (
-          <button
-            onClick={onOpenVideoHub}
-            className="px-2.5 py-1 rounded-lg text-xs font-medium text-emerald-300 hover:bg-emerald-500/10 flex items-center gap-1.5 transition-colors"
-            title="AI 视频大模型：阿里 Wan 2.1、LTX-Video、快手可灵 1.5 等"
-          >
-            <span className="text-xs">🎥</span>
-            <span>AI 视频</span>
           </button>
         )}
 

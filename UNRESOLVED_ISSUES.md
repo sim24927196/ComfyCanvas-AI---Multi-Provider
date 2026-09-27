@@ -81,4 +81,16 @@
   1. 优化后端 `/api/huggingface/generate`：针对公开官方 Z-Image-Turbo 空间，在未配置私有 `hfToken` 时允许直接使用公开调用通道，成功返回真实高精度 1024x1024 图像产物。
   2. 调整默认预设 Preset 0 为免 Token 直通极速通道，保证用户打开应用后点击前端 UI「生成」按钮即可 100% 走完真实工作流管线（10% -> 25% -> 40% -> 50% -> 92% -> 100%）并实时上屏图像产物。
 
+### 10. 彻底清理 Model Hub 虚构模型枢纽与非模型引擎 (已修复)
+- **现象描述**：在全生态模型与 LoRA 枢纽中心 (ModelHubModal) 中展示了 Agnes AI 与 SenseNova (商汤日日新) 两个并不存在公共模型市场的引擎，点击后列表为空或报错，且底模常量中存在虚假的 `sensenova-v5` Checkpoint。
+- **根因分析**：
+  1. SenseNova（商汤日日新）是专注于 LLM 深度思考与推理（DeepSeek V4, GLM-5.2）的自然语言引擎，Agnes AI 是 ApiHub 聚合网关，两者均非像 Civitai、Hugging Face、ModelScope、Fal.ai、Tensor.Art 那样托管海量社区 Checkpoint/LoRA 权重的开放模型市场。
+  2. `ModelHubModal.tsx` 与 `server.ts` 错误地为两者添加了模型枢纽 Tab 与探活请求，导致前端呈现空白或错误。
+- **修复方案**：
+  1. 在 `ModelHubModal.tsx` 中移除 `agnes` 与 `sensenova` 选项卡，保留 100% 真实提供社区模型市场的引擎（Civitai、Fal.ai、Tensor.Art、ModelScope CN、ModelScope AI、Hugging Face、NanoGPT、Google Gemini/Imagen）。
+  2. 在 `server.ts` `/api/models` 中移除对 `api.agnes.ai/v1/models` 与 `api.sensenova.cn/v1/models` 的无意义伪请求。
+  3. 从 `src/constants/nodes.ts` `BASE_MODELS` 中移除虚构的 `sensenova-v5` Checkpoint，保留真实各生态底模。
+  4. 验证所有 8 大真实模型枢纽实时 API 查询与分类过滤，全部 100% 连通并返回真实模型。
+
+
 

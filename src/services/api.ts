@@ -501,18 +501,53 @@ export const fetchCloudServerSettings = async (): Promise<Record<string, string>
   return {};
 };
 
-export const saveCloudServerSettings = async (settings: Record<string, string>): Promise<boolean> => {
+export const fetchKeyPoolStats = async (): Promise<Record<string, any>> => {
   try {
-    const resp = await fetch('/api/cloud/settings', {
+    const resp = await fetch('/api/cloud-keys/stats');
+    if (resp.ok) return await resp.json();
+  } catch (e) {
+    console.error('Fetch key pool stats error:', e);
+  }
+  return {};
+};
+
+export const updateKeyPoolStrategy = async (provider: string, strategy: 'round_robin' | 'failover' | 'latency_best'): Promise<boolean> => {
+  try {
+    const resp = await fetch('/api/cloud-keys/strategy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
+      body: JSON.stringify({ provider, strategy }),
     });
     return resp.ok;
   } catch (e) {
-    console.error('Save server settings error:', e);
+    console.error('Update key pool strategy error:', e);
   }
   return false;
 };
+
+export const testSingleKey = async (provider: string, key: string): Promise<{ status: string; latency?: number; message: string }> => {
+  try {
+    const resp = await fetch('/api/cloud-keys/test-single', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, key }),
+    });
+    if (resp.ok) return await resp.json();
+    return { status: 'invalid', message: `HTTP ${resp.status}` };
+  } catch (e: any) {
+    return { status: 'invalid', message: e.message || '测试失败' };
+  }
+};
+
+export const fetchCloudBalances = async (): Promise<Record<string, { status: string; detail: string; amount?: number | string }>> => {
+  try {
+    const resp = await fetch('/api/cloud-keys/balances');
+    if (resp.ok) return await resp.json();
+  } catch (e) {
+    console.error('Fetch cloud balances error:', e);
+  }
+  return {};
+};
+
 
 

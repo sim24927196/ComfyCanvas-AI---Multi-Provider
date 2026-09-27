@@ -309,7 +309,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                       else if (p.id === 'nanogpt') defaultModel = 'flux-schnell';
                       else if (p.id === 'fal') defaultModel = 'fal-ai/krea-2/turbo';
                       else if (p.id === 'civitai') defaultModel = 'urn:air:krea2:checkpoint:civitai:2726029@3091481';
-                      else if (p.id === 'tensorart') defaultModel = 'oc_character_illustration';
+                      else if (p.id === 'tensorart') defaultModel = 'strong_text2image_nano_banana2';
                       update({ targetProvider: p.id as any, checkpoint: defaultModel });
                     }}
                     className={`py-1.5 px-1 rounded-lg text-center font-mono text-[10px] transition-all truncate ${
@@ -445,11 +445,26 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
             <span className="text-[10px] text-slate-500 font-mono">ComfyUI 规范</span>
           </div>
 
-          {/* Seed */}
-          <div className="space-y-1">
+          {/* Seed & Seed Control */}
+          <div className="space-y-1.5">
             <div className="flex items-center justify-between text-slate-400 text-[10px] font-mono">
-              <span>SEED (随机种子)</span>
-              <span className="text-slate-500">{params.seedControl === 'randomize' ? '每次随机' : '锁定固定'}</span>
+              <span>SEED (随机种子与控制模式)</span>
+              <div className="flex items-center gap-1">
+                {(['randomize', 'fixed', 'increment', 'decrement'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => update({ seedControl: mode })}
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-mono transition-colors ${
+                      (params.seedControl || 'randomize') === mode
+                        ? 'bg-cyan-500/25 text-cyan-300 font-bold border border-cyan-500/50'
+                        : 'bg-[#121316] text-slate-400 border border-[#262833] hover:text-slate-200'
+                    }`}
+                  >
+                    {mode === 'randomize' ? '随机' : mode === 'fixed' ? '固定' : mode === 'increment' ? '递增+1' : '递减-1'}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="flex gap-1.5">
               <input
@@ -461,12 +476,13 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 className="flex-1 bg-[#111216] border border-[#2b2d38] focus:border-cyan-500 rounded-lg px-2.5 py-1.5 font-mono text-cyan-300 text-[11px] outline-none select-text cursor-text"
               />
               <button
+                type="button"
                 onClick={handleRandomizeSeed}
                 className="p-2 bg-[#23252f] hover:bg-[#2e313e] text-slate-200 rounded-lg border border-[#353846] transition-colors flex items-center gap-1 text-[10px]"
-                title="骰子随机摇号"
+                title="骰子重新摇号"
               >
                 <Dices className="w-3.5 h-3.5 text-cyan-400" />
-                <span>随机</span>
+                <span>摇号</span>
               </button>
             </div>
           </div>

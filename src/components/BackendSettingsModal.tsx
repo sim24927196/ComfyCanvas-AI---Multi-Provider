@@ -1,7 +1,33 @@
 import React from 'react';
-import { ExternalLink, Key, CheckCircle2, XCircle, Loader2, Sparkles, ShieldCheck, Zap, AlertTriangle, RefreshCw } from 'lucide-react';
+import {
+  ExternalLink,
+  Key,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Sparkles,
+  ShieldCheck,
+  Zap,
+  AlertTriangle,
+  RefreshCw,
+  Layers,
+  Plus,
+  Trash2,
+  Activity,
+  Coins,
+  Cpu,
+  Clock,
+  Check,
+} from 'lucide-react';
 import { ApiKeysState, ProviderConfig, ProviderId } from '../types/providers';
-import { testProviderConnection, DEFAULT_TEST_KEYS } from '../services/api';
+import {
+  testProviderConnection,
+  DEFAULT_TEST_KEYS,
+  fetchKeyPoolStats,
+  updateKeyPoolStrategy,
+  testSingleKey,
+  fetchCloudBalances,
+} from '../services/api';
 
 interface BackendSettingsModalProps {
   isOpen: boolean;
@@ -17,14 +43,41 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
   onSaveKeys,
 }) => {
   const [keys, setKeys] = React.useState<ApiKeysState>(apiKeys);
+  const [activeMainTab, setActiveMainTab] = React.useState<'providers' | 'pool' | 'balance'>('providers');
+  const [activeProviderTab, setActiveProviderTab] = React.useState<ProviderId>('fal');
   const [testResults, setTestResults] = React.useState<Record<string, { status: string; message: string; latency?: number }>>({});
   const [testingProvider, setTestingProvider] = React.useState<string | null>(null);
+  const [testingSingleKeyIndex, setTestingSingleKeyIndex] = React.useState<number | null>(null);
   const [testingAll, setTestingAll] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<ProviderId>('fal');
+
+  // Key Pool Stats & Balances State
+  const [poolStats, setPoolStats] = React.useState<Record<string, any>>({});
+  const [balances, setBalances] = React.useState<Record<string, { status: string; detail: string; amount?: number | string }>>({});
+  const [isLoadingBalances, setIsLoadingBalances] = React.useState(false);
+  const [newKeyInput, setNewKeyInput] = React.useState('');
+
+  const refreshStats = React.useCallback(async () => {
+    const stats = await fetchKeyPoolStats();
+    setPoolStats(stats);
+  }, []);
+
+  const refreshBalances = React.useCallback(async () => {
+    setIsLoadingBalances(true);
+    try {
+      const b = await fetchCloudBalances();
+      setBalances(b);
+    } finally {
+      setIsLoadingBalances(false);
+    }
+  }, []);
 
   React.useEffect(() => {
     setKeys(apiKeys);
-  }, [apiKeys, isOpen]);
+    if (isOpen) {
+      refreshStats();
+      refreshBalances();
+    }
+  }, [apiKeys, isOpen, refreshStats, refreshBalances]);
 
   if (!isOpen) return null;
 
@@ -32,14 +85,26 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
     {
       id: 'fal',
       name: 'Fal.ai',
-      badge: 'FLUX & SDXL 极速云',
+      badge: 'FLUX & SDXL 极速云 (多 Key 轮询)',
       docsUrl: 'https://docs.fal.ai',
-      description: '极速无服务器 (Serverless) 推理平台，支持 FLUX.1 dev/schnell 和 SDXL 以及多 LoRA 栈式加载。',
+      description: '极速无服务器 (Serverless) 推理平台，支持 FLUX.1 dev/schnell 和 SDXL 以及多 LoRA 栈式加载。支持多 Key 负载均衡与并发轮询。',
       apiUrl: 'https://fal.run',
       keyName: 'falKey',
-      keyPlaceholder: 'fal_key_xxxxxxxxxxxxxxxxxxxxxxxx',
+      keyPlaceholder: 'fal_key_xxxxxxxxxxxxxxxxxxxxxxxx (支持换行/逗号输入多个 Key)',
       status: 'unconfigured',
       popularModels: ['fal-ai/flux/dev', 'fal-ai/flux/schnell', 'fal-ai/fast-sdxl', 'fal-ai/flux-lora'],
+    },
+    {
+      id: 'gemini',
+      name: 'Google Gemini & Imagen',
+      badge: '官方直连 SDK / Imagen 3 / Gemini 3.8',
+      docsUrl: 'https://ai.google.dev',
+      description: 'Google 官方 Imagen 3.0 高保真生图引擎、Gemini 3.1 Flash Image (Nano Banana 2) 及 Gemini 3.8 Flash 提示词/参数重绘器。已完成系统级深度集成与原生 SDK 路由。',
+      apiUrl: 'Google GenAI SDK (Imagen 3 / Gemini 3.8 Flash / Nano Banana)',
+      keyName: 'geminiKey',
+      keyPlaceholder: '系统自动注入环境变量 GEMINI_API_KEY (或填入自定义多 Key)',
+      status: 'connected',
+      popularModels: ['imagen-3.0-generate-002', 'gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image', 'gemini-3.8-flash', 'gemini-3.1-pro-preview'],
     },
     {
       id: 'agnes',
@@ -91,7 +156,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
     },
     {
       id: 'modelscope',
-      name: 'ModelScope CN (魔搭社区国内站)',
+      name: 'ModelScope CN (魔搭国内站)',
       badge: '国内站 / 消耗国内魔粒',
       docsUrl: 'https://modelscope.cn/docs',
       description: '魔搭社区国内站 (modelscope.cn) 官方推理接口，消耗国内魔粒额度，支持 Wan 2.1、Z-Image-Turbo 及国内全量微调 LoRA。',
@@ -137,19 +202,70 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
       status: 'unconfigured',
       popularModels: ['FLUX.1 [dev]', 'SDXL 1.0 Base', 'Pony Diffusion V6 XL', 'Illustrious-XL', 'Wan 2.1 Cinematic Video'],
     },
-    {
-      id: 'gemini',
-      name: 'Google Gemini',
-      badge: '内置官方 Imagen 3 引擎',
-      docsUrl: 'https://ai.google.dev',
-      description: 'Google 官方 Imagen 3 超高清生图引擎与 Gemini 3.8 Flash 提示词/参数重绘器，免配可用。',
-      apiUrl: 'Google GenAI SDK (Imagen 3 / Gemini 3.8 Flash)',
-      keyName: 'geminiKey',
-      keyPlaceholder: '系统自动注入环境变量 GEMINI_API_KEY',
-      status: 'connected',
-      popularModels: ['imagen-3.0-generate-002', 'gemini-3.8-flash'],
-    },
   ];
+
+  const currentProvider = providers.find((p) => p.id === activeProviderTab) || providers[0];
+
+  // Helper to get raw key string for current provider
+  const rawKeyString = String((keys as any)[currentProvider.keyName] || '');
+  const parsedKeyList = rawKeyString
+    .split(/[\n,;]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+
+  const currentStrategy = keys[`${currentProvider.id}_strategy`] || poolStats[currentProvider.id]?.strategy || 'round_robin';
+
+  const handleUpdateKeysForProvider = (newList: string[]) => {
+    const joined = newList.join('\n');
+    setKeys((prev) => ({
+      ...prev,
+      [currentProvider.keyName]: joined,
+    }));
+  };
+
+  const handleAddKey = () => {
+    if (!newKeyInput.trim()) return;
+    const added = newKeyInput
+      .split(/[\n,;]+/)
+      .map((k) => k.trim())
+      .filter(Boolean);
+    const merged = Array.from(new Set([...parsedKeyList, ...added]));
+    handleUpdateKeysForProvider(merged);
+    setNewKeyInput('');
+  };
+
+  const handleDeleteKey = (idx: number) => {
+    const copy = [...parsedKeyList];
+    copy.splice(idx, 1);
+    handleUpdateKeysForProvider(copy);
+  };
+
+  const handleStrategyChange = async (strat: 'round_robin' | 'failover' | 'latency_best') => {
+    setKeys((prev) => ({
+      ...prev,
+      [`${currentProvider.id}_strategy`]: strat,
+    }));
+    await updateKeyPoolStrategy(currentProvider.id, strat);
+    refreshStats();
+  };
+
+  const handleTestSingle = async (key: string, index: number) => {
+    setTestingSingleKeyIndex(index);
+    try {
+      const res = await testSingleKey(currentProvider.id, key);
+      setTestResults((prev) => ({
+        ...prev,
+        [`${currentProvider.id}_${index}`]: {
+          status: res.status === 'active' || res.status === 'ok' ? 'ok' : 'error',
+          message: res.message,
+          latency: res.latency,
+        },
+      }));
+      refreshStats();
+    } finally {
+      setTestingSingleKeyIndex(null);
+    }
+  };
 
   const handleTest = async (providerId: ProviderId) => {
     setTestingProvider(providerId);
@@ -164,6 +280,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
           latency: res.latency,
         },
       }));
+      refreshStats();
     } catch (e: any) {
       setTestResults((prev) => ({
         ...prev,
@@ -202,6 +319,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
       }
     }
     setTestingAll(false);
+    refreshStats();
   };
 
   const handleFillTestKeys = () => {
@@ -217,34 +335,34 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
     onClose();
   };
 
-  const currentProvider = providers.find((p) => p.id === activeTab) || providers[0];
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
-      <div className="bg-[#1b1c22] border border-[#2e303c] rounded-2xl w-full max-w-4xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-200">
+      <div className="bg-[#181920] border border-[#2e303c] rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden text-xs">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#2a2c38] bg-[#14151a]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#272935] bg-[#121318]">
           <div className="flex items-center space-x-3">
-            <div className="p-2.5 rounded-xl bg-gradient-to-tr from-cyan-600 to-indigo-600 text-white font-bold shadow-lg shadow-cyan-500/20">
+            <div className="p-2.5 rounded-xl bg-gradient-to-tr from-cyan-600 via-indigo-600 to-purple-600 text-white font-bold shadow-lg shadow-cyan-500/20">
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                后台模型与云端 API 接入管理
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
-                  多引擎即插即用
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white tracking-wide">
+                  云端 API 接入管理 & 多 Key 轮询总控台
+                </h2>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 font-mono">
+                  Multi-Key Rotation & Balances
                 </span>
-              </h2>
+              </div>
               <p className="text-[11px] text-slate-400">
-                管理 Civitai、Fal.ai、Hugging Face、魔搭社区 (ModelScope)、NanoGPT 及 Gemini 的接入状态
+                支持多 Key 轮询分发、故障平滑切换 (Failover)、额度余额实时查询与 Google Gemini 官方引擎直连
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleFillTestKeys}
-              className="px-3 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 text-[11px] font-bold flex items-center gap-1.5 transition-all"
-              title="一键填入您提供的测试 Key"
+              className="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-[11px] font-bold flex items-center gap-1.5 transition-all"
+              title="一键填入测试环境默认密钥"
             >
               <Zap className="w-3.5 h-3.5 text-indigo-400" />
               <span>载入测试密钥</span>
@@ -252,10 +370,10 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
             <button
               onClick={handleTestAll}
               disabled={testingAll}
-              className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-bold flex items-center gap-1.5 shadow-md shadow-cyan-600/20 disabled:opacity-50 transition-all"
+              className="px-3.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-bold flex items-center gap-1.5 shadow-md shadow-cyan-600/20 disabled:opacity-50 transition-all"
             >
               {testingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              <span>全量测试</span>
+              <span>全量连通测试</span>
             </button>
             <button
               onClick={onClose}
@@ -266,153 +384,309 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
           </div>
         </div>
 
-        {/* Modal Body */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Provider Sidebar */}
-          <div className="w-64 border-r border-[#262833] bg-[#131418] p-3 space-y-1.5 overflow-y-auto">
-            {providers.map((p) => {
-              const test = testResults[p.id];
-              const hasKey = Boolean((keys as any)[p.keyName]);
-              const isActive = activeTab === p.id;
+        {/* Navigation Bar Tabs */}
+        <div className="flex items-center justify-between px-6 py-2 border-b border-[#242631] bg-[#14151b]">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveMainTab('providers')}
+              className={`px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                activeMainTab === 'providers'
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#1f2029]'
+              }`}
+            >
+              <Key className="w-3.5 h-3.5" />
+              <span>服务商密钥配置</span>
+            </button>
+            <button
+              onClick={() => {
+                setActiveMainTab('pool');
+                refreshStats();
+              }}
+              className={`px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                activeMainTab === 'pool'
+                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#1f2029]'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>多 Key 负载监控</span>
+            </button>
+            <button
+              onClick={() => {
+                setActiveMainTab('balance');
+                refreshBalances();
+              }}
+              className={`px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                activeMainTab === 'balance'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#1f2029]'
+              }`}
+            >
+              <Coins className="w-3.5 h-3.5" />
+              <span>余额与额度总览</span>
+            </button>
+          </div>
+          <div className="text-[10px] text-slate-400 font-mono flex items-center gap-2">
+            <span>当前可用引擎: {providers.length} 处</span>
+          </div>
+        </div>
 
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => setActiveTab(p.id)}
-                  className={`w-full flex items-center justify-between p-3 rounded-xl text-left transition-all ${
-                    isActive
-                      ? 'bg-cyan-500/15 border border-cyan-500/40 text-white shadow-sm'
-                      : 'hover:bg-[#1f2027] text-slate-300 border border-transparent'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold truncate flex items-center gap-1.5">
-                      {p.name}
-                      {p.id === 'gemini' && (
-                        <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.2 rounded font-mono">
-                          内置
-                        </span>
+        {/* Modal Body */}
+        {activeMainTab === 'providers' && (
+          <div className="flex-1 flex overflow-hidden">
+            {/* Provider Sidebar */}
+            <div className="w-64 border-r border-[#242631] bg-[#121318] p-3 space-y-1.5 overflow-y-auto">
+              {providers.map((p) => {
+                const test = testResults[p.id];
+                const keyStr = String((keys as any)[p.keyName] || '');
+                const count = keyStr.split(/[\n,;]+/).filter(Boolean).length;
+                const isActive = activeProviderTab === p.id;
+
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => setActiveProviderTab(p.id)}
+                    className={`w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-all ${
+                      isActive
+                        ? 'bg-cyan-500/15 border border-cyan-500/40 text-white shadow-sm'
+                        : 'hover:bg-[#1d1f27] text-slate-300 border border-transparent'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold truncate flex items-center gap-1.5">
+                        <span>{p.name}</span>
+                        {p.id === 'gemini' && (
+                          <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-mono">
+                            内置直连
+                          </span>
+                        )}
+                        {count > 1 && (
+                          <span className="text-[9px] bg-purple-500/20 text-purple-300 px-1 py-0.2 rounded font-mono font-bold">
+                            {count} Keys
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400 truncate">{p.badge}</div>
+                    </div>
+                    <div>
+                      {test?.status === 'ok' ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      ) : test?.status === 'warning' ? (
+                        <AlertTriangle className="w-4 h-4 text-amber-400" />
+                      ) : test?.status === 'error' ? (
+                        <XCircle className="w-4 h-4 text-rose-400" />
+                      ) : count > 0 ? (
+                        <span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" />
+                      ) : (
+                        <span className="w-2 h-2 rounded-full bg-slate-600 inline-block" />
                       )}
                     </div>
-                    <div className="text-[10px] text-slate-400 truncate">{p.badge}</div>
-                  </div>
-                  <div>
-                    {test?.status === 'ok' ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    ) : test?.status === 'warning' ? (
-                      <AlertTriangle className="w-4 h-4 text-amber-400" />
-                    ) : test?.status === 'error' ? (
-                      <XCircle className="w-4 h-4 text-rose-400" />
-                    ) : hasKey ? (
-                      <span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" />
-                    ) : (
-                      <span className="w-2 h-2 rounded-full bg-slate-600 inline-block" />
-                    )}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
 
-          {/* Provider Details & Input */}
-          <div className="flex-1 p-6 overflow-y-auto bg-[#17181f] space-y-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  {currentProvider.name}
-                  <a
-                    href={currentProvider.docsUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40"
-                  >
-                    <span>官方文档</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                </h3>
-                <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                  {currentProvider.description}
-                </p>
+            {/* Provider Details & Multi-Key Editor */}
+            <div className="flex-1 p-6 overflow-y-auto bg-[#171820] space-y-4">
+              {/* Header Details */}
+              <div className="flex items-start justify-between">
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    {currentProvider.name}
+                    <a
+                      href={currentProvider.docsUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40"
+                    >
+                      <span>官方接入文档</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                    {currentProvider.description}
+                  </p>
+                </div>
               </div>
-            </div>
 
-            {/* API Endpoint badge */}
-            <div className="bg-[#111216] border border-[#252733] rounded-xl p-3 text-xs font-mono text-slate-300 flex items-center justify-between">
-              <span className="text-slate-400">接口基址 (API Endpoint):</span>
-              <span className="text-cyan-400 font-semibold">{currentProvider.apiUrl}</span>
-            </div>
+              {/* Endpoint & Models */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-[#111216] border border-[#252733] rounded-xl p-2.5 text-xs font-mono text-slate-300 flex flex-col justify-center">
+                  <span className="text-slate-400 text-[10px]">接口基址 (API Endpoint):</span>
+                  <span className="text-cyan-400 font-semibold truncate mt-0.5">{currentProvider.apiUrl}</span>
+                </div>
+                <div className="bg-[#111216] border border-[#252733] rounded-xl p-2.5 text-xs">
+                  <span className="text-slate-400 text-[10px] block mb-1">支持与常用模型列表:</span>
+                  <div className="flex flex-wrap gap-1">
+                    {currentProvider.popularModels.map((m, mIdx) => (
+                      <span
+                        key={`pop-${currentProvider.id}-${m}-${mIdx}`}
+                        className="text-[10px] font-mono bg-[#20222a] border border-[#2e313d] text-slate-300 px-1.5 py-0.5 rounded"
+                      >
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
 
-            {/* Popular Models */}
-            <div>
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-2">
-                支持与常用模型
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {currentProvider.popularModels.map((m, mIdx) => (
-                  <span
-                    key={`pop-${currentProvider.id}-${m}-${mIdx}`}
-                    className="text-[11px] font-mono bg-[#20222a] border border-[#2e313d] text-slate-300 px-2.5 py-1 rounded-lg"
-                  >
-                    {m}
+              {/* Multi-Key Rotation Strategy Selector */}
+              <div className="bg-[#121317] border border-[#272935] rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300 font-bold flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-purple-400" />
+                    多 Key 负载策略 (Rotation Strategy)
                   </span>
-                ))}
-              </div>
-            </div>
-
-            {/* API Key Input */}
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <Key className="w-3.5 h-3.5 text-cyan-400" />
-                  API 密钥 / Access Token
-                </span>
-                {currentProvider.id === 'civitai' && (
-                  <span className="text-[11px] text-amber-400">公开模型搜索免 Key，下载私有模型需填</span>
-                )}
-                {currentProvider.id === 'modelscope' && (
-                  <span className="text-[11px] text-emerald-400">国内站 (modelscope.cn) Access Token</span>
-                )}
-                {currentProvider.id === 'modelscope_ai' && (
-                  <span className="text-[11px] text-purple-400">国际站 (modelscope.ai) Access Token</span>
-                )}
-              </label>
-
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={(keys as any)[currentProvider.keyName] || ''}
-                  onChange={(e) =>
-                    setKeys({
-                      ...keys,
-                      [currentProvider.keyName]: e.target.value,
-                    })
-                  }
-                  placeholder={currentProvider.keyPlaceholder}
-                  className="flex-1 bg-[#111216] border border-[#2b2d38] focus:border-cyan-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 outline-none font-mono"
-                />
-                <button
-                  onClick={() => handleTest(currentProvider.id)}
-                  disabled={testingProvider === currentProvider.id}
-                  className="px-4 py-2.5 rounded-xl bg-[#23252f] hover:bg-[#2e313e] border border-[#353846] text-xs font-semibold text-white flex items-center gap-2 transition-all disabled:opacity-50 shrink-0"
-                >
-                  {testingProvider === currentProvider.id ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                      <span>测试中...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>测试连接</span>
-                    </>
-                  )}
-                </button>
+                  <span className="text-slate-400 text-[10px] font-mono">
+                    当前配置密钥数: {parsedKeyList.length} 个
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    {
+                      id: 'round_robin',
+                      title: '🔄 顺序轮询 (Round-Robin)',
+                      desc: '按序在多 Key 间轮流分发，最大化并发吞吐与配额利用',
+                    },
+                    {
+                      id: 'failover',
+                      title: '🛡️ 主备故障切换 (Failover)',
+                      desc: '优先使用首个主 Key，遭遇 429 限流或异常时自动切换备用 Key',
+                    },
+                    {
+                      id: 'latency_best',
+                      title: '⚡ 最优低延迟 (Best Latency)',
+                      desc: '自动测速并优先选择近期响应耗时最低的高速 Key',
+                    },
+                  ].map((st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => handleStrategyChange(st.id as any)}
+                      className={`p-2.5 rounded-lg text-left transition-all border ${
+                        currentStrategy === st.id
+                          ? 'bg-purple-500/20 border-purple-500/60 text-purple-200 shadow-sm'
+                          : 'bg-[#181921] border-[#292b37] text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <div className="font-bold text-[11px]">{st.title}</div>
+                      <div className="text-[10px] text-slate-400 mt-1 leading-tight">{st.desc}</div>
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {/* Status report */}
+              {/* Key List & Editor */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5 text-cyan-400" />
+                    已挂载的 API 密钥池列表 ({parsedKeyList.length})
+                  </label>
+                  <button
+                    onClick={() => handleTest(currentProvider.id)}
+                    disabled={testingProvider === currentProvider.id}
+                    className="text-[11px] px-2.5 py-1 rounded bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/30 flex items-center gap-1"
+                  >
+                    {testingProvider === currentProvider.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                    <span>测试全池连通性</span>
+                  </button>
+                </div>
+
+                {parsedKeyList.length === 0 ? (
+                  <div className="p-4 rounded-xl border border-dashed border-[#2d2f3d] bg-[#121317] text-center text-slate-400 space-y-1">
+                    <p>当前服务商暂未配置自定义密钥</p>
+                    <p className="text-[10px] text-cyan-400/80">在下方输入框中粘贴 API Key 并点击「添加至密钥池」</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {parsedKeyList.map((k, kIdx) => {
+                      const singleTest = testResults[`${currentProvider.id}_${kIdx}`];
+                      const masked = k.length > 10 ? `${k.substring(0, 4)}...${k.substring(k.length - 4)}` : `${k.substring(0, 2)}***`;
+                      return (
+                        <div
+                          key={`k-${kIdx}`}
+                          className="bg-[#121318] border border-[#272935] rounded-xl p-2.5 flex items-center justify-between gap-2"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-5 h-5 rounded-full bg-[#20222a] text-slate-400 flex items-center justify-center text-[10px] font-mono shrink-0">
+                              {kIdx + 1}
+                            </span>
+                            <span className="font-mono text-xs text-slate-200 truncate" title={k}>
+                              {masked}
+                            </span>
+                            {singleTest?.status === 'ok' && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-800/40 shrink-0 flex items-center gap-0.5">
+                                <Check className="w-2.5 h-2.5" /> 就绪 ({singleTest.latency}ms)
+                              </span>
+                            )}
+                            {singleTest?.status === 'error' && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40 shrink-0">
+                                异常: {singleTest.message}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleTestSingle(k, kIdx)}
+                              disabled={testingSingleKeyIndex === kIdx}
+                              className="px-2 py-1 rounded bg-[#1e2029] hover:bg-[#282a36] text-[10px] text-cyan-300 flex items-center gap-1 border border-[#313342] transition-colors"
+                              title="对当前单个 Key 进行连通测试"
+                            >
+                              {testingSingleKeyIndex === kIdx ? (
+                                <Loader2 className="w-3 h-3 animate-spin text-cyan-400" />
+                              ) : (
+                                <Sparkles className="w-3 h-3 text-cyan-400" />
+                              )}
+                              <span>单项测试</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteKey(kIdx)}
+                              className="p-1 text-slate-500 hover:text-rose-400 rounded hover:bg-[#1f2029] transition-colors"
+                              title="移除此 Key"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Add Key Input */}
+                <div className="pt-2 flex gap-2">
+                  <input
+                    type="text"
+                    value={newKeyInput}
+                    onChange={(e) => setNewKeyInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddKey();
+                      }
+                    }}
+                    placeholder={`输入 ${currentProvider.name} API Key (支持一次粘贴多个换行/逗号分隔的 Key)...`}
+                    className="flex-1 bg-[#0f1014] border border-[#2b2d38] focus:border-cyan-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 outline-none font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddKey}
+                    className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold flex items-center gap-1 text-xs shrink-0 transition-all shadow-md shadow-cyan-600/20"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>添加至密钥池</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Status Report */}
               {testResults[currentProvider.id] && (
                 <div
-                  className={`mt-2 p-3 rounded-xl text-xs flex items-center gap-2.5 border ${
+                  className={`p-3 rounded-xl text-xs flex items-center gap-2.5 border ${
                     testResults[currentProvider.id].status === 'ok'
                       ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-300'
                       : testResults[currentProvider.id].status === 'warning'
@@ -438,34 +712,203 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                 </div>
               )}
             </div>
+          </div>
+        )}
 
-            {/* Transparent Execution & Intent Compliance Tip */}
-            <div className="p-3.5 rounded-xl bg-cyan-950/20 border border-cyan-800/30 text-xs text-slate-300 space-y-1">
-              <span className="font-semibold text-cyan-400 flex items-center gap-1">
-                💡 严格意图遵从与透明报错体系
-              </span>
-              <p className="leading-relaxed text-[11px]">
-                拒绝假图欺骗与静默降级：系统 100% 遵从您在画布中编排的节点与指定服务商，绝不擅自篡改 Provider 或用虚假图片兜底。若未配置 API Key 或上游接口限流报错，系统将直接透传真实状态码与错误信息，便于快速定位与排障。
-              </p>
+        {/* Multi-Key Pool Dashboard Tab */}
+        {activeMainTab === 'pool' && (
+          <div className="flex-1 p-6 overflow-y-auto bg-[#171820] space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-purple-400" />
+                  多 Key 轮询健康状态与调用统计
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  监控各服务商当前激活的 Key 数量、限流冷却状态、平均请求延迟及成功率
+                </p>
+              </div>
+              <button
+                onClick={refreshStats}
+                className="px-3 py-1.5 rounded-lg bg-[#20222a] hover:bg-[#2c2f3b] text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-[#313442]"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>刷新监控指标</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              {providers.map((p) => {
+                const stats = poolStats[p.id];
+                const keyCount = stats?.totalKeys || 0;
+                const activeCount = stats?.activeKeys || 0;
+                const rateLimitedCount = stats?.rateLimitedKeys || 0;
+                const invalidCount = stats?.invalidKeys || 0;
+
+                return (
+                  <div
+                    key={p.id}
+                    className="bg-[#121318] border border-[#262834] rounded-xl p-3.5 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white text-xs">{p.name}</span>
+                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 font-mono">
+                          策略: {stats?.strategy || 'round_robin'}
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        共 {keyCount} 个 Key
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-mono">
+                      <div className="bg-[#181a22] p-2 rounded-lg border border-[#272a38]">
+                        <span className="text-emerald-400 font-bold text-xs block">{activeCount}</span>
+                        <span className="text-slate-400">🟢 正常可用</span>
+                      </div>
+                      <div className="bg-[#181a22] p-2 rounded-lg border border-[#272a38]">
+                        <span className="text-amber-400 font-bold text-xs block">{rateLimitedCount}</span>
+                        <span className="text-slate-400">🟡 限流冷却</span>
+                      </div>
+                      <div className="bg-[#181a22] p-2 rounded-lg border border-[#272a38]">
+                        <span className="text-rose-400 font-bold text-xs block">{invalidCount}</span>
+                        <span className="text-slate-400">🔴 鉴权异常</span>
+                      </div>
+                    </div>
+
+                    {/* Key Details Mini-Table */}
+                    {Array.isArray(stats?.keys) && stats.keys.length > 0 && (
+                      <div className="space-y-1 pt-1">
+                        {stats.keys.map((k: any, idx: number) => (
+                          <div
+                            key={idx}
+                            className="text-[10px] font-mono bg-[#161720] px-2 py-1 rounded flex items-center justify-between text-slate-300"
+                          >
+                            <span className="truncate max-w-[150px]">{k.maskedKey}</span>
+                            <div className="flex items-center gap-2 text-slate-400">
+                              <span>调用: {k.totalCalls}次</span>
+                              <span>延迟: {k.avgLatencyMs}ms</span>
+                              <span
+                                className={`px-1 rounded ${
+                                  k.status === 'active'
+                                    ? 'bg-emerald-950 text-emerald-400'
+                                    : k.status === 'rate_limited'
+                                    ? 'bg-amber-950 text-amber-400'
+                                    : 'bg-rose-950 text-rose-400'
+                                }`}
+                              >
+                                {k.status}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
-        </div>
+        )}
+
+        {/* Balances & Quota Overview Tab */}
+        {activeMainTab === 'balance' && (
+          <div className="flex-1 p-6 overflow-y-auto bg-[#171820] space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Coins className="w-4 h-4 text-emerald-400" />
+                  云端各服务商额度与余额管理
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  实时探测魔搭社区魔粒、Fal.ai 算力额度、Google Imagen 3 等各服务商的额度健康状态
+                </p>
+              </div>
+              <button
+                onClick={refreshBalances}
+                disabled={isLoadingBalances}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-600/20 disabled:opacity-50 transition-all"
+              >
+                {isLoadingBalances ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                <span>查询最新余额</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              {providers.map((p) => {
+                const bal = balances[p.id];
+                return (
+                  <div
+                    key={p.id}
+                    className="bg-[#121318] border border-[#262834] rounded-xl p-4 space-y-2 flex flex-col justify-between"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                          <span>{p.name}</span>
+                          <span className="text-[10px] text-slate-400">({p.badge})</span>
+                        </div>
+                        <div className="text-[11px] text-slate-300 mt-1">
+                          {bal ? bal.detail : '点击右上角「查询最新余额」探测状态'}
+                        </div>
+                      </div>
+                      <div>
+                        {bal?.status === 'ok' ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/50 font-semibold">
+                            🟢 额度正常
+                          </span>
+                        ) : bal?.status === 'exhausted' ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-950 text-rose-300 border border-rose-800/50 font-semibold">
+                            🔴 额度耗尽
+                          </span>
+                        ) : bal?.status === 'low' ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800/50 font-semibold">
+                            🟡 额度偏低
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-semibold">
+                            ⚪ 未查询
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-[#222430] flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                      <span>端点: {p.apiUrl}</span>
+                      <a
+                        href={p.docsUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-cyan-400 hover:text-cyan-300 flex items-center gap-0.5"
+                      >
+                        充值/查询控制台 <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-[#262833] bg-[#14151a] flex items-center justify-between">
-          <span className="text-[11px] text-slate-400">密钥保存在浏览器安全 LocalStorage 中，不会泄露给第三方</span>
+        <div className="px-6 py-3.5 border-t border-[#242631] bg-[#121318] flex items-center justify-between">
+          <span className="text-[11px] text-slate-400 font-mono">
+            所有密钥与轮询策略均实时同步至本地及服务端安全存储中
+          </span>
           <div className="flex items-center gap-3">
             <button
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-[#23252f] hover:bg-[#2e313e] text-xs font-semibold text-slate-300 transition-colors"
+              className="px-4 py-2 rounded-xl bg-[#20222b] hover:bg-[#2b2d39] text-xs font-semibold text-slate-300 transition-colors"
             >
               取消
             </button>
             <button
               onClick={handleSave}
-              className="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-xs font-bold text-white shadow-lg shadow-cyan-600/20 transition-all"
+              className="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-xs font-bold text-white shadow-lg shadow-cyan-600/20 transition-all"
             >
-              保存所有配置
+              保存所有配置与密钥池
             </button>
           </div>
         </div>
